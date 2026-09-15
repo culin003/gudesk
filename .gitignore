@@ -2,6 +2,9 @@
 target/
 dist/
 
+# 原生 helper 编译产物（源码与 Makefile 保留跟踪）
+native/portal-helper/gudesk-portal-helper
+
 # IDE
 .idea/
 *.iml

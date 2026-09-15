@@ -71,6 +71,46 @@ class RobotScreenCapturerTest {
     }
 
     @Test
+    void XWayland检测_WAYLAND_DISPLAY与DISPLAY同时非空() {
+        assertTrue(RobotScreenCapturer.isXWaylandSession(env(null, "wayland-0", ":0")));
+        assertTrue(RobotScreenCapturer.isXWaylandSession(env("wayland", "wayland-0", ":0")),
+                "XDG_SESSION_TYPE=wayland 但 DISPLAY 可用仍属 XWayland（Robot 可工作但半捕获）");
+    }
+
+    @Test
+    void XWayland检测_纯X11与纯Wayland不误判() {
+        assertFalse(RobotScreenCapturer.isXWaylandSession(env("x11", null, ":0")), "纯 X11");
+        assertFalse(RobotScreenCapturer.isXWaylandSession(env(null, "wayland-0", null)), "纯 Wayland");
+        assertFalse(RobotScreenCapturer.isXWaylandSession(env(null, "wayland-0", "")), "DISPLAY 空白视为缺失");
+    }
+
+    @Test
+    void XWayland检测_与Wayland检测覆盖三种环境组合() {
+        // 纯 X11：两者皆假
+        Map<String, String> x11 = env("x11", null, ":0");
+        assertFalse(RobotScreenCapturer.isWaylandSession(x11));
+        assertFalse(RobotScreenCapturer.isXWaylandSession(x11));
+
+        // 纯 Wayland：仅 Wayland 判定为真
+        Map<String, String> wayland = env(null, "wayland-0", null);
+        assertTrue(RobotScreenCapturer.isWaylandSession(wayland));
+        assertFalse(RobotScreenCapturer.isXWaylandSession(wayland));
+
+        // XWayland（sessionType 未声明 wayland、双 display 并存）：仅 XWayland 判定为真，
+        // init 放行 Robot 并输出半捕获警告
+        Map<String, String> xwayland = env(null, "wayland-0", ":0");
+        assertFalse(RobotScreenCapturer.isWaylandSession(xwayland));
+        assertTrue(RobotScreenCapturer.isXWaylandSession(xwayland));
+
+        // 典型 KDE/GNOME Wayland 会话（sessionType=wayland 且 XWayland 可用）：
+        // Wayland 判定优先为真，init 直接拒绝（Robot 在此环境下不可靠），
+        // XWayland 判定同为真仅作诊断参考
+        Map<String, String> waylandWithX = env("wayland", "wayland-0", ":0");
+        assertTrue(RobotScreenCapturer.isWaylandSession(waylandWithX));
+        assertTrue(RobotScreenCapturer.isXWaylandSession(waylandWithX));
+    }
+
+    @Test
     void 能力描述_输出BGRA与最大帧率() {
         AdapterCapabilities caps = new RobotScreenCapturer().capabilities();
         assertNotNull(caps);
@@ -79,6 +119,9 @@ class RobotScreenCapturerTest {
         assertEquals(60, caps.maxFps());
         assertFalse(caps.isHardwareAccelerated());
         assertEquals(java.util.List.of("BGRA"), caps.supportedPixelFormats());
+        // Robot 的 mouseMove 为绝对坐标；无 restore token 持久化授权能力
+        assertTrue(caps.isAbsolutePointer());
+        assertFalse(caps.isPersistentConsent());
     }
 
     @Test

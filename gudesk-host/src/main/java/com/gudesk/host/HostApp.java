@@ -8,6 +8,7 @@ import com.gudesk.common.spi.NativeFrame;
 import com.gudesk.common.spi.ScreenCapturer;
 import com.gudesk.common.spi.SpiLoader;
 import com.gudesk.common.spi.VideoEncoder;
+import com.gudesk.host.capture.PortalScreenCapturer;
 import com.gudesk.host.capture.RobotScreenCapturer;
 import com.gudesk.host.encode.JavaCvVideoEncoder;
 import com.gudesk.host.session.AutoAuthorizer;
@@ -263,7 +264,8 @@ public class HostApp {
     private static int runSelftest() {
         System.out.println("=== GuDesk Host 自检（capturer + encoder 链路）===");
 
-        // 1. SPI 加载（失败降级到默认实现）
+        // 1. SPI 加载（失败降级到默认实现；Wayland 会话优先 Portal 实现）
+        PortalScreenCapturer.preferOnWaylandSession(System.getenv());
         ScreenCapturer capturer = SpiLoader.load(ScreenCapturer.class, "capturer",
                 RobotScreenCapturer::defaultCapturer);
         VideoEncoder encoder = SpiLoader.load(VideoEncoder.class, "encoder",
@@ -271,13 +273,11 @@ public class HostApp {
         System.out.println("capturer = " + capturer.getClass().getName());
         System.out.println("encoder  = " + encoder.getClass().getName());
 
-        // 2. 图形环境检查（Wayland / headless 给出明确错误并以 2 退出）
+        // 2. 图形环境检查（headless 给出明确错误并以 2 退出；Wayland 走 Portal，
+        //    授权弹窗可能出现，等待窗口 90s）
         if (RobotScreenCapturer.isWaylandSession(System.getenv())) {
-            String sessionType = System.getenv("XDG_SESSION_TYPE");
-            String wayland = System.getenv("WAYLAND_DISPLAY");
-            System.out.printf("[错误] Wayland 会话不支持屏幕捕获，当前仅支持 X11（XDG_SESSION_TYPE=%s, WAYLAND_DISPLAY=%s）%n",
-                    sessionType, wayland);
-            return 2;
+            System.out.println("[提示] Wayland 会话：经 xdg-desktop-portal 捕获，"
+                    + "请在弹出的授权对话框中允许 GuDesk");
         }
         if (GraphicsEnvironment.isHeadless()) {
             System.out.println("[错误] 无图形环境（headless 模式），无法执行屏幕捕获自检");

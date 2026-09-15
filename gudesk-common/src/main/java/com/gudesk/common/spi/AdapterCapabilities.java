@@ -24,6 +24,8 @@ public final class AdapterCapabilities {
     private final int maxFps;
     private final boolean hardwareAccelerated;
     private final List<String> supportedPixelFormats;
+    private final boolean persistentConsent;
+    private final boolean absolutePointer;
 
     private AdapterCapabilities(Builder builder) {
         this.maxWidth = builder.maxWidth;
@@ -31,6 +33,8 @@ public final class AdapterCapabilities {
         this.maxFps = builder.maxFps;
         this.hardwareAccelerated = builder.hardwareAccelerated;
         this.supportedPixelFormats = List.copyOf(builder.supportedPixelFormats);
+        this.persistentConsent = builder.persistentConsent;
+        this.absolutePointer = builder.absolutePointer;
     }
 
     public static Builder builder() {
@@ -62,11 +66,23 @@ public final class AdapterCapabilities {
         return supportedPixelFormats;
     }
 
+    /** 授权是否可持久化（如 xdg-desktop-portal 的 restore token 支持） */
+    public boolean isPersistentConsent() {
+        return persistentConsent;
+    }
+
+    /** 输入注入是否支持绝对坐标（如 Portal 的 NotifyPointerMotionAbsolute、Robot 的 mouseMove） */
+    public boolean isAbsolutePointer() {
+        return absolutePointer;
+    }
+
     @Override
     public String toString() {
         return "AdapterCapabilities{maxWidth=" + maxWidth + ", maxHeight=" + maxHeight
                 + ", maxFps=" + maxFps + ", hardwareAccelerated=" + hardwareAccelerated
-                + ", supportedPixelFormats=" + supportedPixelFormats + '}';
+                + ", supportedPixelFormats=" + supportedPixelFormats
+                + ", persistentConsent=" + persistentConsent
+                + ", absolutePointer=" + absolutePointer + '}';
     }
 
     /**
@@ -78,6 +94,8 @@ public final class AdapterCapabilities {
         private int maxHeight;
         private int maxFps;
         private boolean hardwareAccelerated;
+        private boolean persistentConsent;
+        private boolean absolutePointer;
         private final List<String> supportedPixelFormats = new ArrayList<>();
 
         public Builder maxWidth(int maxWidth) {
@@ -97,6 +115,18 @@ public final class AdapterCapabilities {
 
         public Builder hardwareAccelerated(boolean hardwareAccelerated) {
             this.hardwareAccelerated = hardwareAccelerated;
+            return this;
+        }
+
+        /** 设置授权是否可持久化（restore token 支持） */
+        public Builder persistentConsent(boolean persistentConsent) {
+            this.persistentConsent = persistentConsent;
+            return this;
+        }
+
+        /** 设置输入注入是否支持绝对坐标 */
+        public Builder absolutePointer(boolean absolutePointer) {
+            this.absolutePointer = absolutePointer;
             return this;
         }
 

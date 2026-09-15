@@ -108,6 +108,22 @@ public class RobotScreenCapturer implements ScreenCapturer {
                 && (display == null || display.isBlank());
     }
 
+    /**
+     * 判断是否处于 XWayland 环境（Wayland 会话 + XWayland 兼容层）：
+     * {@code WAYLAND_DISPLAY} 非空且 {@code DISPLAY} 可用。
+     *
+     * <p>此时 {@code java.awt.Robot} 可以工作，但只能捕获到 X11/XWayland 应用的窗口内容，
+     * Wayland 原生应用的区域将呈现为黑块或缺失——属于"半捕获"状态。
+     *
+     * @param env 环境变量映射（键：WAYLAND_DISPLAY / DISPLAY）
+     */
+    public static boolean isXWaylandSession(Map<String, String> env) {
+        String waylandDisplay = env.get("WAYLAND_DISPLAY");
+        String display = env.get("DISPLAY");
+        return waylandDisplay != null && !waylandDisplay.isBlank()
+                && display != null && !display.isBlank();
+    }
+
     /** 当前进程环境变量快照 */
     public static Map<String, String> currentEnv() {
         return new HashMap<>(System.getenv());
@@ -122,6 +138,11 @@ public class RobotScreenCapturer implements ScreenCapturer {
         Objects.requireNonNull(config, "config");
         if (isWaylandSession(currentEnv())) {
             throw new AdapterException("Wayland 会话不支持屏幕捕获，当前仅支持 X11");
+        }
+        if (isXWaylandSession(currentEnv())) {
+            LOG.warn("检测到 XWayland 环境：Robot 仅能捕获 X11 应用窗口，"
+                    + "Wayland 原生应用的区域将显示为黑块或缺失；"
+                    + "建议在 Wayland 会话下使用 Portal 屏幕捕获适配器");
         }
         if (GraphicsEnvironment.isHeadless()) {
             throw new AdapterException("无图形环境：当前 JVM 处于 headless 模式，无法初始化屏幕捕获");
@@ -208,6 +229,7 @@ public class RobotScreenCapturer implements ScreenCapturer {
                 .maxHeight(screen.height)
                 .maxFps(MAX_FPS)
                 .hardwareAccelerated(false)
+                .absolutePointer(true)
                 .addSupportedPixelFormat(PIXEL_FORMAT)
                 .build();
     }

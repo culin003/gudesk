@@ -70,6 +70,17 @@
             <classifier>windows-x86_64</classifier>
         </dependency>
 
+        <!-- D-Bus 客户端（Wayland xdg-desktop-portal 封装，见 com.gudesk.host.portal 包；
+             版本由父 POM dependencyManagement 管理） -->
+        <dependency>
+            <groupId>com.github.hypfvieh</groupId>
+            <artifactId>dbus-java-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.hypfvieh</groupId>
+            <artifactId>dbus-java-transport-junixsocket</artifactId>
+        </dependency>
+
         <!-- 测试 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
