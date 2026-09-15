@@ -535,13 +535,31 @@ public final class DbusPortalBus implements PortalBus {
         }
     }
 
-    /** Notify* 注入调用：D-Bus 错误统一包装为 PortalException */
+    /** Notify* 注入调用：D-Bus 错误统一包装为 PortalException；会话失效类错误单独标记 */
     private void invokeNotify(String method, NotifyCall call) throws PortalException {
         try {
             call.invoke();
         } catch (RuntimeException e) {
-            throw new PortalException("Portal " + method + " 输入注入失败: " + e.getMessage(), e);
+            String message = "Portal " + method + " 输入注入失败: " + e.getMessage();
+            if (isSessionInvalidError(e)) {
+                // portal 守护进程重启/会话句柄作废（重启不会发 Closed 信号，状态直接丢失）：
+                // 重试无意义，标记为会话失效供上层触发 invalidate 断开
+                throw PortalException.sessionInvalid(message, e);
+            }
+            throw new PortalException(message, e);
         }
+    }
+
+    /** 判断 D-Bus 错误是否为「会话已失效」（Invalid session / 会话对象不存在） */
+    private static boolean isSessionInvalidError(RuntimeException e) {
+        String msg = e.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        String lower = msg.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("invalid session")
+                || lower.contains("unknown object")
+                || lower.contains("no such object");
     }
 
     @FunctionalInterface

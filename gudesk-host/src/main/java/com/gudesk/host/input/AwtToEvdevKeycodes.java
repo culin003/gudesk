@@ -366,6 +366,54 @@ public final class AwtToEvdevKeycodes {
         };
     }
 
+    // ------------------------------------------------------------------
+    // US 布局 Shift 标点分解（字符型键码 → 基础物理键 + Shift）
+    // ------------------------------------------------------------------
+
+    /**
+     * US 键盘布局中需要 Shift 组合的标点字符 → 基础键的 AWT VK 键码
+     * （如 '!' → VK_1，'?' → VK_SLASH）。evdev 为物理键模型，字符型扩展键码
+     * （{@link KeyEvent#getExtendedKeyCodeForChar} 产出的 0x200+ 系列）无物理
+     * 键槽位，注入时须分解为 Shift+基础键。
+     */
+    private static final Map<Character, Integer> SHIFTED_CHAR_BASE;
+
+    static {
+        Map<Character, Integer> m = new HashMap<>();
+        m.put('!', KeyEvent.VK_1);
+        m.put('@', KeyEvent.VK_2);
+        m.put('#', KeyEvent.VK_3);
+        m.put('$', KeyEvent.VK_4);
+        m.put('%', KeyEvent.VK_5);
+        m.put('^', KeyEvent.VK_6);
+        m.put('&', KeyEvent.VK_7);
+        m.put('*', KeyEvent.VK_8);
+        m.put('(', KeyEvent.VK_9);
+        m.put(')', KeyEvent.VK_0);
+        m.put('_', KeyEvent.VK_MINUS);
+        m.put('+', KeyEvent.VK_EQUALS);
+        m.put('{', KeyEvent.VK_OPEN_BRACKET);
+        m.put('}', KeyEvent.VK_CLOSE_BRACKET);
+        m.put('|', KeyEvent.VK_BACK_SLASH);
+        m.put(':', KeyEvent.VK_SEMICOLON);
+        m.put('"', KeyEvent.VK_QUOTE);
+        m.put('~', KeyEvent.VK_BACK_QUOTE);
+        m.put('<', KeyEvent.VK_COMMA);
+        m.put('>', KeyEvent.VK_PERIOD);
+        m.put('?', KeyEvent.VK_SLASH);
+        SHIFTED_CHAR_BASE = Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * 查询 US 布局下需 Shift 的标点字符的基础键 VK 键码。
+     *
+     * @return 基础键 VK；该字符非 Shift 组合标点返回 0
+     */
+    public static int shiftedCharBaseVk(char c) {
+        Integer base = SHIFTED_CHAR_BASE.get(c);
+        return base != null ? base : 0;
+    }
+
     /** 已映射 AWT 键位总数（诊断/测试用） */
     public static int mappedKeyCount() {
         return AWT_TO_EVDEV.size();

@@ -29,6 +29,8 @@ class PortalInputInjectorTest {
     /** Linux evdev 标准常量（linux/input-event-codes.h） */
     private static final int KEY_A = 30;
     private static final int KEY_ENTER = 28;
+    private static final int KEY_1 = 2;
+    private static final int KEY_LEFTSHIFT = 42;
     private static final int BTN_LEFT = 0x110;
     private static final int BTN_RIGHT = 0x111;
 
@@ -47,6 +49,8 @@ class PortalInputInjectorTest {
         int grantedDevices = PortalDevice.KEYBOARD | PortalDevice.POINTER;
         /** 下一次 Notify* 调用注入瞬时失败（模拟单次 D-Bus 抖动，会话本身仍有效） */
         boolean failNextNotify;
+        /** 下一次 Notify* 调用注入会话失效失败（模拟 portal 重启后句柄作废） */
+        boolean failNextWithInvalidSession;
 
         @Override
         public String createSession() {
@@ -97,6 +101,10 @@ class PortalInputInjectorTest {
         }
 
         private void failOnce() throws PortalException {
+            if (failNextWithInvalidSession) {
+                failNextWithInvalidSession = false;
+                throw PortalException.sessionInvalid("Portal 会话已失效（模拟 portal 重启）", null);
+            }
             if (failNextNotify) {
                 failNextNotify = false;
                 throw new PortalException("瞬时 D-Bus 抖动");
@@ -269,5 +277,43 @@ class PortalInputInjectorTest {
         assertEquals(0, injector.droppedEvents());
         injector.injectKey(KeyEvent.VK_ENTER, "\n", false); // 会话仍有效：下次注入正常
         assertEquals("notifyKeyboardKeycode:" + KEY_ENTER + ",false", bus.calls.get(0));
+    }
+
+    @Test
+    void portal重启类会话失效_触发invalidate并抛异常断开() throws Exception {
+        PortalInputInjector injector = startedInjector();
+        java.util.concurrent.atomic.AtomicReference<String> reason = new java.util.concurrent.atomic.AtomicReference<>();
+        holder.addInvalidationListener(reason::set);
+
+        bus.failNextWithInvalidSession = true;
+        assertThrows(AdapterException.class, () -> injector.injectMouse(0.5, 0.5));
+
+        assertTrue(bus.busClosed, "失效后总线被关闭");
+        org.junit.jupiter.api.Assertions.assertNotNull(reason.get(), "失效监听器收到原因");
+        // 后续注入：租约已失效，直接抛异常
+        assertThrows(AdapterException.class, () -> injector.injectMouse(0.5, 0.5));
+    }
+
+    @Test
+    void shift标点字符_分解为Shift加基础键序列() throws Exception {
+        PortalInputInjector injector = startedInjector();
+        int vkExclaim = KeyEvent.getExtendedKeyCodeForChar('!');
+        injector.injectKey(vkExclaim, "!", true);  // 按下：Shift↓ → 1↓
+        injector.injectKey(vkExclaim, "!", false); // 释放：1↑ → Shift↑
+        assertEquals(List.of(
+                "notifyKeyboardKeycode:" + KEY_LEFTSHIFT + ",true",
+                "notifyKeyboardKeycode:" + KEY_1 + ",true",
+                "notifyKeyboardKeycode:" + KEY_1 + ",false",
+                "notifyKeyboardKeycode:" + KEY_LEFTSHIFT + ",false"), bus.calls);
+        assertEquals(0, injector.droppedEvents());
+    }
+
+    @Test
+    void 非Shift组合的字符型键码_仍丢弃() throws Exception {
+        PortalInputInjector injector = startedInjector();
+        int vkEmdash = KeyEvent.getExtendedKeyCodeForChar('—'); // 中文破折号：无 US 布局基础键
+        injector.injectKey(vkEmdash, "—", true);
+        assertTrue(bus.calls.isEmpty());
+        assertEquals(1, injector.droppedEvents());
     }
 }

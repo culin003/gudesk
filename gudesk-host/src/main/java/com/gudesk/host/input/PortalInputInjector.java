@@ -218,12 +218,36 @@ public class PortalInputInjector implements InputInjector {
             return;
         }
         OptionalInt evdev = AwtToEvdevKeycodes.evdevForKeyCode(code);
+        boolean withShift = false;
+        if (evdev.isEmpty() && keyChar != null && !keyChar.isEmpty()) {
+            // 字符型扩展键码（如 '!' 的 VK_EXCLAMATION_MARK）无 evdev 物理键槽位：
+            // 分解为 Shift+基础键（US 布局）
+            int baseVk = AwtToEvdevKeycodes.shiftedCharBaseVk(keyChar.charAt(0));
+            if (baseVk != 0) {
+                OptionalInt base = AwtToEvdevKeycodes.evdevForKeyCode(baseVk);
+                if (base.isPresent()) {
+                    evdev = base;
+                    withShift = true;
+                }
+            }
+        }
         if (evdev.isEmpty()) {
             drop("无 evdev 映射的键位 " + KeyEventCodes.nameForCode(code));
             return;
         }
         try {
-            client.notifyKeyboardKeycode(evdev.getAsInt(), pressed);
+            if (withShift) {
+                // 按下序：Shift→基础键；释放序：基础键→Shift（与真实按键次序一致）
+                if (pressed) {
+                    client.notifyKeyboardKeycode(AwtToEvdevKeycodes.KEY_LEFTSHIFT, true);
+                    client.notifyKeyboardKeycode(evdev.getAsInt(), true);
+                } else {
+                    client.notifyKeyboardKeycode(evdev.getAsInt(), false);
+                    client.notifyKeyboardKeycode(AwtToEvdevKeycodes.KEY_LEFTSHIFT, false);
+                }
+            } else {
+                client.notifyKeyboardKeycode(evdev.getAsInt(), pressed);
+            }
         } catch (PortalException e) {
             handleInjectFailure("按键", e);
         }
@@ -272,10 +296,17 @@ public class PortalInputInjector implements InputInjector {
         }
     }
 
-    /** 注入失败：会话失效类异常向上抛（断开会话），瞬时失败记 WARN 继续 */
+    /** 注入失败：会话失效类（含 portal 重启后的 Invalid session）触发 invalidate 并断开；
+     *  租约已失效时同样断开；其余瞬时失败记 WARN 继续 */
     private void handleInjectFailure(String event, PortalException e) {
+        if (e.isSessionInvalid()) {
+            // portal 守护进程重启等场景不会发 Closed 信号，状态直接丢失——
+            // 以注入错误为准触发失效传播（通知捕获/注入两侧的监听器）
+            LOG.warn("Portal 会话已失效（{}）: {}", event, e.getMessage());
+            PortalContextHolder.getInstance().invalidate("注入失败: " + e.getMessage());
+        }
         PortalContextHolder.Lease l = lease;
-        if (l == null || !l.isValid()) {
+        if (e.isSessionInvalid() || l == null || !l.isValid()) {
             throw new AdapterException("Portal 会话已失效，" + event + " 事件触发会话断开: " + e.getMessage(), e);
         }
         LOG.warn("Portal {} 注入失败（会话仍有效，继续）: {}", event, e.getMessage());
