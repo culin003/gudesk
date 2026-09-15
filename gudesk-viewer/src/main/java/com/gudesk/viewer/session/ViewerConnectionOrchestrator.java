@@ -157,10 +157,20 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
      * @param preferRelay     true=跳过打洞与 TCP 直连，直接走中继（测试中继回落）
      */
     public ViewerConnectionOrchestrator(InetSocketAddress signalingServer, boolean preferRelay) {
+        this(signalingServer,
+                new InetSocketAddress(signalingServer.getHostString(), DEFAULT_STUN_PORT),
+                new InetSocketAddress(signalingServer.getHostString(), DEFAULT_RELAY_PORT),
+                preferRelay);
+    }
+
+    /**
+     * 全参构造（测试注入随机端口的 STUN/中继服务器用，包私有不改生产行为）。
+     */
+    ViewerConnectionOrchestrator(InetSocketAddress signalingServer, InetSocketAddress stunServer,
+                                 InetSocketAddress relayServer, boolean preferRelay) {
         this.signalingAddress = signalingServer;
-        String host = signalingServer.getHostString();
-        this.stunAddress = new InetSocketAddress(host, DEFAULT_STUN_PORT);
-        this.relayAddress = new InetSocketAddress(host, DEFAULT_RELAY_PORT);
+        this.stunAddress = stunServer;
+        this.relayAddress = relayServer;
         this.preferRelay = preferRelay;
     }
 

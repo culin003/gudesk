@@ -76,6 +76,13 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 会话服务并发测试：起真实信令服务器验证 HostSignalingService 拒绝转发，仅测试类路径 -->
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-server</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

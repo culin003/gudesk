@@ -107,6 +107,20 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 连接编排器测试：起真实服务器三件套（随机端口）做回落决策验证，仅测试类路径 -->
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-server</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 连接编排器测试：真实被控端会话服务（TcpSessionServer/HostSessionManager 等），仅测试类路径 -->
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-host</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
