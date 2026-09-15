@@ -1,0 +1,67 @@
+syntax = "proto3";
+package gudesk;
+option java_package = "com.gudesk.common.proto";
+option java_outer_classname = "GuDeskProto";
+
+// 信令消息（主控/被控 <-> 信令服务器，信令通道内层信封）
+message RegisterRequest { string id = 1; bytes public_key = 2; }         // 被控端注册
+message RegisterResponse { bool ok = 1; string assigned_id = 2; string message = 3; }
+message Heartbeat { int64 timestamp = 1; }                                // 信令心跳
+message HeartbeatAck { int64 timestamp = 1; }
+message PunchCandidate { string address = 1; }                            // ip:port 候选
+message ConnectRequest { string target_id = 1; bytes viewer_public_key = 2; repeated PunchCandidate candidates = 3; } // 主控发起
+message ConnectForward { string from_id = 1; bytes viewer_public_key = 2; repeated PunchCandidate candidates = 3; }   // 服务器转发给被控端
+message ConnectAccept { bytes host_public_key = 1; repeated PunchCandidate candidates = 2; string relay_token = 3; }
+message ConnectReject { string reason = 1; }
+
+// 会话消息（会话数据通道信封，端到端加密前的明文结构）
+message SessionNegotiate {
+  bytes ephemeral_public_key = 1;      // ECDH 临时公钥（每次连接新生成）
+  string password_proof = 2;           // 密码（密文通道第二轮提交）
+  bytes viewer_identity_public_key = 3; // 主控端长期身份公钥（X.509，持久化于 ~/.gudesk/viewer_identity；旧版为空）
+  bytes identity_proof = 4;            // 身份持有证明 SHA256(ECDH(身份私钥, 被控端临时公钥))，密文通道提交，防冒用他人身份公钥
+}
+message SessionNegotiateAck { bytes ephemeral_public_key = 1; bool authorized = 2; string reason = 3; }
+message AuthorizeRequest { string viewer_id = 1; string viewer_fingerprint = 2; }  // 被控端向用户弹确认（含主控端身份指纹）
+message AuthorizeResponse { bool accepted = 1; bool always_trust = 2; bytes viewer_fingerprint = 3; }
+message VideoFrame { bytes h264_data = 1; uint64 frame_index = 2; bool keyframe = 3; uint32 width = 4; uint32 height = 5; int64 capture_ns = 6; }
+message KeyFrameRequest {}
+message MouseMoveEvent { double x = 1; double y = 2; }                    // 归一化 0~1 坐标
+message MouseButtonEvent { enum Button { LEFT=0; MIDDLE=1; RIGHT=2; } Button button = 1; bool pressed = 2; double x = 3; double y = 4; }
+message WheelEvent { double delta_x = 1; double delta_y = 2; }
+message KeyEvent { int32 key_code = 1; string key_char = 2; bool pressed = 3; }
+message SessionHeartbeat { int64 timestamp = 1; }
+message SessionClose { string reason = 1; }
+message ReliabilityAck { uint64 ack_seq = 1; }                            // UDP 可靠消息确认
+
+message SessionMessage {
+  oneof payload {
+    SessionNegotiate negotiate = 1;
+    SessionNegotiateAck negotiate_ack = 2;
+    VideoFrame video_frame = 3;
+    KeyFrameRequest keyframe_request = 4;
+    MouseMoveEvent mouse_move = 5;
+    MouseButtonEvent mouse_button = 6;
+    WheelEvent wheel = 7;
+    KeyEvent key = 8;
+    SessionHeartbeat session_heartbeat = 9;
+    SessionClose session_close = 10;
+    AuthorizeRequest authorize_request = 11;
+    AuthorizeResponse authorize_response = 12;
+    ReliabilityAck reliability_ack = 13;
+  }
+}
+
+// 信令通道外层信封
+message SignalingEnvelope {
+  oneof payload {
+    RegisterRequest register_request = 1;
+    RegisterResponse register_response = 2;
+    Heartbeat heartbeat = 3;
+    HeartbeatAck heartbeat_ack = 4;
+    ConnectRequest connect_request = 5;
+    ConnectForward connect_forward = 6;
+    ConnectAccept connect_accept = 7;
+    ConnectReject connect_reject = 8;
+  }
+}

@@ -1,0 +1,17 @@
+# 构建产物
+target/
+dist/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.trae/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+*.tmp

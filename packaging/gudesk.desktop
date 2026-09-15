@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GuDesk
+GenericName=Remote Desktop
+Comment=GuDesk 远程桌面（主控端 UI + 后台被控服务）
+Exec=/opt/gudesk/bin/gudesk
+Icon=/opt/gudesk/lib/gudesk.png
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupWMClass=gudesk

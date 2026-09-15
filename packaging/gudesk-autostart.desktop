@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GuDesk Host Service
+Comment=GuDesk 被控服务（用户登录后自动启动；gudesk --disable-autostart 可关闭）
+Exec=/opt/gudesk/bin/gudesk --host-only
+Icon=/opt/gudesk/lib/gudesk.png
+Terminal=false
+X-GNOME-Autostart-enabled=true

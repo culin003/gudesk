@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.gudesk</groupId>
+        <artifactId>gudesk</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>gudesk-launcher</artifactId>
+    <packaging>jar</packaging>
+
+    <name>GuDesk :: Launcher</name>
+    <description>合并应用统一入口：无参数=主控端 UI+后台被控服务；--host-only/--viewer-only/--server-only 分模式</description>
+
+    <dependencies>
+        <!-- 三个子应用（host/viewer/server），传递依赖汇聚为合并打包的完整运行时 classpath -->
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-host</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-viewer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.gudesk</groupId>
+            <artifactId>gudesk-server</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.gudesk.launcher.GuDeskLauncher</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+            <!-- 汇聚三个子应用的运行时依赖到 target/lib：打包脚本以此为 jpackage 的 input 目录来源
+                 （含 linux+windows 双平台原生 jar，打包时按目标平台剔除另一半） -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-runtime-deps</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <includeScope>runtime</includeScope>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
