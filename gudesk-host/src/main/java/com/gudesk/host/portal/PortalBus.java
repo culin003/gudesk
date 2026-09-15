@@ -139,6 +139,14 @@ public interface PortalBus extends AutoCloseable {
      */
     void closeSession(String sessionHandle) throws PortalException;
 
+    /**
+     * 注册「portal 主动关闭会话」回调（Session 的 Closed 信号，如用户从系统设置撤销
+     * 授权、portal 后端重启）：实现应在收到信号时回调（在总线信号分发线程上执行，
+     * 实现方须自行保证快速返回/自行切换线程）。默认空实现（内存 FakeBus 等无需支持）。
+     */
+    default void setSessionClosedListener(Runnable listener) {
+    }
+
     /** 释放底层资源（D-Bus 连接等），不负责关闭活动会话 */
     @Override
     void close();

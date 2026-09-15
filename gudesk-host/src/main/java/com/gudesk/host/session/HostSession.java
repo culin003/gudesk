@@ -28,6 +28,7 @@ import com.gudesk.common.spi.VideoEncoder;
 import com.gudesk.host.capture.PortalScreenCapturer;
 import com.gudesk.host.capture.RobotScreenCapturer;
 import com.gudesk.host.encode.JavaCvVideoEncoder;
+import com.gudesk.host.input.PortalInputInjector;
 import com.gudesk.host.input.RobotInputInjector;
 import com.google.protobuf.ByteString;
 import org.slf4j.Logger;
@@ -422,8 +423,9 @@ public final class HostSession implements SessionEventListener {
 
     private void startMediaPipeline() {
         try {
-            // Wayland 会话优先 Portal 捕获实现（用户显式配置 SPI 偏好时不干预）
+            // Wayland 会话优先 Portal 捕获/注入实现（用户显式配置 SPI 偏好时不干预）
             PortalScreenCapturer.preferOnWaylandSession(System.getenv());
+            PortalInputInjector.preferOnWaylandSession(System.getenv());
             capturer = SpiLoader.load(ScreenCapturer.class, "capturer",
                     RobotScreenCapturer::defaultCapturer);
             encoder = SpiLoader.load(VideoEncoder.class, "encoder",

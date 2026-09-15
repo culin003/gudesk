@@ -7,11 +7,10 @@ import com.gudesk.common.spi.NativeFrame;
 import com.gudesk.common.spi.ScreenCapturer;
 import com.gudesk.host.portal.PortalClient;
 import com.gudesk.host.portal.PortalControlMessage;
-import com.gudesk.host.portal.PortalDevice;
+import com.gudesk.host.portal.PortalContextHolder;
 import com.gudesk.host.portal.PortalException;
 import com.gudesk.host.portal.PortalSession;
 import com.gudesk.host.portal.PortalStream;
-import com.gudesk.host.portal.dbus.DbusPortalBus;
 import org.freedesktop.dbus.spi.message.ISocketProvider;
 import org.freedesktop.dbus.transport.junixsocket.JUnixSocketSocketProvider;
 import org.newsclub.net.unix.AFUNIXSocket;
@@ -76,8 +75,6 @@ public class PortalScreenCapturer implements ScreenCapturer {
     public static final int FRAME_MAGIC = 0x31464447;
     /** helper 二进制名 */
     public static final String HELPER_BIN = "gudesk-portal-helper";
-    /** 授权弹窗等待窗口（用户可能不在屏幕前） */
-    private static final Duration CONSENT_TIMEOUT = Duration.ofSeconds(90);
     /** helper 控制 socket 就绪的等待窗口 */
     private static final Duration HELPER_CONNECT_TIMEOUT = Duration.ofSeconds(3);
 
@@ -89,7 +86,8 @@ public class PortalScreenCapturer implements ScreenCapturer {
     private volatile boolean running;
     private volatile Thread readerThread;
     private volatile Process helperProcess;
-    private volatile PortalClient portalClient;
+    /** 共享 portal 会话租约（与 PortalInputInjector 复用同一捆绑会话） */
+    private volatile PortalContextHolder.Lease portalLease;
 
     private int fps;
     private long frameCount;
@@ -193,28 +191,27 @@ public class PortalScreenCapturer implements ScreenCapturer {
         if (running) {
             return;
         }
-        PortalClient client = null;
+        PortalContextHolder.Lease lease = null;
         Process process = null;
         try {
-            // 1. 建立捆绑 portal 会话（此处可能出现授权弹窗，等待窗口 CONSENT_TIMEOUT）
-            LOG.info("Portal 捕获启动: 建立 RemoteDesktop+ScreenCast 捆绑会话（"
-                    + "若出现授权对话框请在 {}s 内允许）…", CONSENT_TIMEOUT.toSeconds());
-            long t0 = System.nanoTime();
-            client = new PortalClient(new DbusPortalBus(CONSENT_TIMEOUT));
-            PortalSession session = client.open(
-                    PortalDevice.KEYBOARD | PortalDevice.POINTER, true, null);
-            if (session.streams().isEmpty()) {
+            // 1. 取得共享捆绑 portal 会话租约（首个使用者触发授权弹窗，
+            //    输入注入器复用同一会话；token 恢复/重试逻辑见 PortalContextHolder）
+            PortalContextHolder holder = PortalContextHolder.getInstance();
+            lease = holder.acquire();
+            PortalSession session = lease.session();
+            if (session == null || session.streams().isEmpty()) {
                 throw new AdapterException("Portal 会话未返回任何屏幕流");
             }
-            PortalStream stream = session.streams().get(0);
-            LOG.info("Portal 会话已建立（耗时 {} ms）: 会话句柄={}, 授权设备=0x{}, 流数={}, "
-                            + "流[0]: nodeId={}, 位置=({},{},{}x{}), restoreToken={}",
-                    (System.nanoTime() - t0) / 1_000_000,
+            PortalStream stream = lease.stream();
+            LOG.info("Portal 会话信息: 会话句柄={}, 授权设备=0x{}, 流数={}, "
+                            + "流[0]: nodeId={}, 位置=({},{},{}x{}), restoreToken={}, 键盘={}, 指针={}",
                     session.handle() != null ? session.handle() : "未知",
                     String.format("%x", session.devices()),
                     session.streams().size(),
                     stream.nodeId(), stream.x(), stream.y(), stream.width(), stream.height(),
-                    session.restoreToken() != null ? "已签发" : "无");
+                    session.restoreToken() != null ? "已签发" : "无",
+                    lease.isKeyboardGranted(), lease.isPointerGranted());
+            PortalClient client = lease.client();
             int pwFd = client.openPipeWireRemote();
             LOG.info("OpenPipeWireRemote 成功: fd={}", pwFd);
 
@@ -236,7 +233,7 @@ public class PortalScreenCapturer implements ScreenCapturer {
             LOG.info("控制消息与 PipeWire fd 已移交 helper（SCM_RIGHTS）");
 
             // 3. 启动帧读取线程
-            this.portalClient = client;
+            this.portalLease = lease;
             this.helperProcess = process;
             this.running = true;
             this.frameCount = 0;
@@ -249,7 +246,7 @@ public class PortalScreenCapturer implements ScreenCapturer {
             this.readerThread = thread;
             LOG.info("Portal 捕获已启动: 流节点 {}, 分辨率由首帧协商", stream.nodeId());
         } catch (PortalException | IOException e) {
-            // 失败清理：半启动的 helper 进程与 portal 会话
+            // 失败清理：半启动的 helper 进程与租约（最后一个释放者关闭会话）
             LOG.warn("Portal 捕获启动失败: {}（清理半启动资源）", e.getMessage(), e);
             if (process != null && process.isAlive()) {
                 String errTail = drainProcessTail(process);
@@ -258,8 +255,8 @@ public class PortalScreenCapturer implements ScreenCapturer {
                 }
                 process.destroyForcibly();
             }
-            if (client != null) {
-                client.close();
+            if (lease != null) {
+                lease.close();
             }
             throw new AdapterException("Portal 屏幕捕获启动失败: " + e.getMessage(), e);
         }
@@ -293,10 +290,10 @@ public class PortalScreenCapturer implements ScreenCapturer {
             }
             helperProcess = null;
         }
-        PortalClient client = portalClient;
-        if (client != null) {
-            client.close();
-            portalClient = null;
+        PortalContextHolder.Lease lease = portalLease;
+        if (lease != null) {
+            lease.close();
+            portalLease = null;
         }
         // 丢弃仍未被消费的交付帧
         NativeFrame stale = handoff.poll();

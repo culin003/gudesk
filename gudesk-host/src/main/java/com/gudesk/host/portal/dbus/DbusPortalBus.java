@@ -76,6 +76,8 @@ public final class DbusPortalBus implements PortalBus {
     /** 活动会话句柄与 Closed 信号订阅（会话被 portal 关闭时清理） */
     private volatile String activeSessionHandle;
     private volatile AutoCloseable closedSubscription;
+    /** portal 主动关闭会话（Closed 信号）时的回调 */
+    private volatile Runnable sessionClosedListener;
 
     /**
      * 连接当前环境的会话总线（DBUS_SESSION_BUS_ADDRESS，缺省 $XDG_RUNTIME_DIR/bus）。
@@ -275,6 +277,11 @@ public final class DbusPortalBus implements PortalBus {
     // ------------------------------------------------------------------
 
     @Override
+    public void setSessionClosedListener(Runnable listener) {
+        this.sessionClosedListener = listener;
+    }
+
+    @Override
     public void closeSession(String sessionHandle) throws PortalException {
         ensureOpen();
         AutoCloseable subscription = this.closedSubscription;
@@ -361,7 +368,7 @@ public final class DbusPortalBus implements PortalBus {
         }
     }
 
-    /** 订阅活动会话的 Closed 信号：portal 主动关闭会话时清理跟踪状态 */
+    /** 订阅活动会话的 Closed 信号：portal 主动关闭会话时清理跟踪状态并通知监听器 */
     private void watchSessionClosed(String sessionHandle) throws PortalException {
         AutoCloseable previous = this.closedSubscription;
         if (previous != null) {
@@ -375,6 +382,14 @@ public final class DbusPortalBus implements PortalBus {
                         LOG.info("Portal 会话已被 portal 关闭: {}", sessionHandle);
                         if (sessionHandle.equals(activeSessionHandle)) {
                             activeSessionHandle = null;
+                        }
+                        Runnable listener = sessionClosedListener;
+                        if (listener != null) {
+                            try {
+                                listener.run();
+                            } catch (Throwable t) {
+                                LOG.warn("Portal Closed 信号回调异常（忽略）", t);
+                            }
                         }
                     });
         } catch (DBusException e) {

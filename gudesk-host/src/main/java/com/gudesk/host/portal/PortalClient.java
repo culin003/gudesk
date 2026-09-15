@@ -98,6 +98,14 @@ public final class PortalClient implements AutoCloseable {
     }
 
     /**
+     * 注册「portal 主动关闭会话」（Session Closed 信号，如用户撤销授权）时的回调，
+     * 透传给底层总线。回调在总线信号分发线程上执行，实现方须快速返回/自行切换线程。
+     */
+    public void setSessionClosedListener(Runnable listener) {
+        bus.setSessionClosedListener(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /**
      * 主动关闭当前会话（org.freedesktop.portal.Session.Close）。
      *
      * @throws PortalException 无活动会话或关闭失败
