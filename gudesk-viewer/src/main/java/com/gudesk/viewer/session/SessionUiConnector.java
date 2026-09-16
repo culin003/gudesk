@@ -151,6 +151,14 @@ public final class SessionUiConnector implements UiController.ConnectHandler, In
                     }
 
                     @Override
+                    public void onCapabilities(boolean persistentConsent, boolean absolutePointer) {
+                        StringBuilder sb = new StringBuilder("被控端能力: ");
+                        sb.append(absolutePointer ? "绝对坐标注入" : "相对坐标注入");
+                        sb.append(persistentConsent ? "，支持免弹窗授权" : "，每次连接需确认");
+                        controller.publishMessage(sb.toString());
+                    }
+
+                    @Override
                     public void onClosed(String reason) {
                         stopStatsLoop();
                         controller.updateState(ConnectionState.DISCONNECTED);

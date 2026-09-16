@@ -1,14 +1,6 @@
 package com.gudesk.host.portal;
 
-import com.gudesk.host.portal.dbus.DbusPortalBus;
-import org.freedesktop.dbus.connections.impl.DBusConnection;
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
-import org.freedesktop.dbus.exceptions.DBusException;
-import org.freedesktop.dbus.interfaces.DBus;
-
 import java.io.PrintStream;
-import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -29,9 +21,6 @@ import java.util.Set;
  */
 public final class PortalUnattendedHelper {
 
-    private static final String DBUS_BUS_NAME = "org.freedesktop.DBus";
-    private static final String DBUS_OBJECT_PATH = "/org/freedesktop/DBus";
-
     private PortalUnattendedHelper() {
     }
 
@@ -40,7 +29,7 @@ public final class PortalUnattendedHelper {
         Map<String, String> env = System.getenv();
         Set<String> busNames;
         try {
-            busNames = listBusNames(env);
+            busNames = PortalBackendDetector.listBusNames(env);
         } catch (PortalException e) {
             out.println("[错误] 枚举 D-Bus 总线名失败: " + e.getMessage());
             return 2;
@@ -87,22 +76,5 @@ public final class PortalUnattendedHelper {
         out.println("成功：restore token 已持久化到 " + store.file()
                 + "，后续启动将免弹窗恢复。");
         return 0;
-    }
-
-    /** 枚举会话总线上的已注册名字（用于后端探测） */
-    static Set<String> listBusNames(Map<String, String> env) throws PortalException {
-        String address = DbusPortalBus.resolveSessionBusAddress(env);
-        DBusConnection conn = null;
-        try {
-            conn = DBusConnectionBuilder.forAddress(address).withShared(false).build();
-            DBus dbus = conn.getRemoteObject(DBUS_BUS_NAME, DBUS_OBJECT_PATH, DBus.class);
-            return new LinkedHashSet<>(Arrays.asList(dbus.ListNames()));
-        } catch (DBusException e) {
-            throw new PortalException("枚举 D-Bus 总线名失败", e);
-        } finally {
-            if (conn != null) {
-                conn.disconnect();
-            }
-        }
     }
 }

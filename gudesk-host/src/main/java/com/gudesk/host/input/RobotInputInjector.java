@@ -155,6 +155,7 @@ public class RobotInputInjector implements InputInjector {
                 .maxHeight(screen.height)
                 .maxFps(MAX_EVENT_RATE)
                 .hardwareAccelerated(false)
+                .absolutePointer(true) // java.awt.Robot.mouseMove 支持绝对坐标
                 .build();
     }
 

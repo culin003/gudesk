@@ -229,7 +229,6 @@ public class RobotScreenCapturer implements ScreenCapturer {
                 .maxHeight(screen.height)
                 .maxFps(MAX_FPS)
                 .hardwareAccelerated(false)
-                .absolutePointer(true)
                 .addSupportedPixelFormat(PIXEL_FORMAT)
                 .build();
     }

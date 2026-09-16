@@ -119,8 +119,8 @@ class RobotScreenCapturerTest {
         assertEquals(60, caps.maxFps());
         assertFalse(caps.isHardwareAccelerated());
         assertEquals(java.util.List.of("BGRA"), caps.supportedPixelFormats());
-        // Robot 的 mouseMove 为绝对坐标；无 restore token 持久化授权能力
-        assertTrue(caps.isAbsolutePointer());
+        // capturer 不报告输入注入能力（absolutePointer 属 injector）；无持久化授权能力
+        assertFalse(caps.isAbsolutePointer());
         assertFalse(caps.isPersistentConsent());
     }
 

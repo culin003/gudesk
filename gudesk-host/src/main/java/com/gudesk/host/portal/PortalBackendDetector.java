@@ -1,6 +1,13 @@
 package com.gudesk.host.portal;
 
+import com.gudesk.host.portal.dbus.DbusPortalBus;
+import org.freedesktop.dbus.connections.impl.DBusConnection;
+import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
+import org.freedesktop.dbus.exceptions.DBusException;
+import org.freedesktop.dbus.interfaces.DBus;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -62,6 +69,67 @@ public final class PortalBackendDetector {
             PortalBackendKind.WLROOTS, PortalBackendKind.HYPRANDL, PortalBackendKind.GTK);
 
     private PortalBackendDetector() {
+    }
+
+    /** D-Bus 总线守护进程的名字与对象路径（ListNames 调用目标） */
+    private static final String DBUS_BUS_NAME = "org.freedesktop.DBus";
+    private static final String DBUS_OBJECT_PATH = "/org/freedesktop/DBus";
+
+    /** 当前环境后端探测结果缓存（后端类型在进程生命周期内不变；失败缓存为 UNKNOWN） */
+    private static volatile PortalBackendInfo cachedCurrent;
+
+    /**
+     * 探测当前环境后端（懒加载 + 进程内缓存）：枚举会话总线名后识别后端。
+     * 枚举失败/无后端返回 UNKNOWN（能力位全 false），不抛异常——供 adapter
+     * capabilities 与 HostSession 能力位下发复用。
+     */
+    public static PortalBackendInfo detectCurrent() {
+        PortalBackendInfo cached = cachedCurrent;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (PortalBackendDetector.class) {
+            if (cachedCurrent == null) {
+                cachedCurrent = detectNow();
+            }
+            return cachedCurrent;
+        }
+    }
+
+    private static PortalBackendInfo detectNow() {
+        try {
+            Set<String> busNames = listBusNames(System.getenv());
+            return detect(System.getenv(), busNames);
+        } catch (RuntimeException e) {
+            return new PortalBackendInfo(PortalBackendKind.UNKNOWN, false, false);
+        }
+    }
+
+    /** 枚举会话总线上的已注册名字（用于后端探测） */
+    public static Set<String> listBusNames(Map<String, String> env) throws PortalException {
+        String address = DbusPortalBus.resolveSessionBusAddress(env);
+        DBusConnection conn = null;
+        try {
+            conn = DBusConnectionBuilder.forAddress(address).withShared(false).build();
+            DBus dbus = conn.getRemoteObject(DBUS_BUS_NAME, DBUS_OBJECT_PATH, DBus.class);
+            return new LinkedHashSet<>(Arrays.asList(dbus.ListNames()));
+        } catch (DBusException e) {
+            throw new PortalException("枚举 D-Bus 总线名失败", e);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
+    /** 测试桩安装：固定 detectCurrent 的返回值（单测控制 adapter capabilities 能力位） */
+    static void installForTest(PortalBackendInfo info) {
+        cachedCurrent = info;
+    }
+
+    /** 测试桩清理：清除 detectCurrent 缓存 */
+    static void resetForTest() {
+        cachedCurrent = null;
     }
 
     /**

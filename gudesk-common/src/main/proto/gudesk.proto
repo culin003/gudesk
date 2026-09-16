@@ -21,7 +21,8 @@ message SessionNegotiate {
   bytes viewer_identity_public_key = 3; // 主控端长期身份公钥（X.509，持久化于 ~/.gudesk/viewer_identity；旧版为空）
   bytes identity_proof = 4;            // 身份持有证明 SHA256(ECDH(身份私钥, 被控端临时公钥))，密文通道提交，防冒用他人身份公钥
 }
-message SessionNegotiateAck { bytes ephemeral_public_key = 1; bool authorized = 2; string reason = 3; }
+message SessionNegotiateAck { bytes ephemeral_public_key = 1; bool authorized = 2; string reason = 3; HostCapabilities capabilities = 4; }
+message HostCapabilities { bool persistent_consent = 1; bool absolute_pointer = 2; } // 被控端能力（authorized=true 时填充）
 message AuthorizeRequest { string viewer_id = 1; string viewer_fingerprint = 2; }  // 被控端向用户弹确认（含主控端身份指纹）
 message AuthorizeResponse { bool accepted = 1; bool always_trust = 2; bytes viewer_fingerprint = 3; }
 message VideoFrame { bytes h264_data = 1; uint64 frame_index = 2; bool keyframe = 3; uint32 width = 4; uint32 height = 5; int64 capture_ns = 6; }

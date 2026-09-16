@@ -2,12 +2,15 @@ package com.gudesk.host.session;
 
 import com.gudesk.common.crypto.CryptoUtil;
 import com.gudesk.common.crypto.SessionCipher;
+import com.gudesk.common.proto.GuDeskProto.HostCapabilities;
 import com.gudesk.common.proto.GuDeskProto.SessionMessage;
 import com.gudesk.common.proto.GuDeskProto.SessionNegotiate;
 import com.gudesk.common.proto.GuDeskProto.SessionNegotiateAck;
 import com.gudesk.common.session.ConnectionGatekeeper;
 import com.gudesk.common.session.SessionHandshake;
 import com.gudesk.common.session.TcpSessionEndpoint;
+import com.gudesk.host.portal.PortalBackendInfo;
+import com.gudesk.host.portal.PortalBackendKind;
 import com.google.protobuf.ByteString;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -118,7 +121,28 @@ class HostSessionTest {
             assertTrue(ack.getAuthorized(), "正确密码+授权接受应返回 authorized=true");
             assertTrue(ack.getReason().isEmpty() || !ack.getReason().contains("密码错误"),
                     "成功 Ack 不应带失败原因: " + ack.getReason());
+            assertTrue(ack.hasCapabilities(), "授权成功 Ack 应携带被控端能力位");
         }
+    }
+
+    @Test
+    void 能力位映射_纯函数分会话类型() {
+        // Wayland + KDE：持久化授权 + 绝对坐标
+        HostCapabilities kde = HostSession.hostCapabilities(true,
+                new PortalBackendInfo(PortalBackendKind.KDE, true, true));
+        assertTrue(kde.getPersistentConsent());
+        assertTrue(kde.getAbsolutePointer());
+
+        // Wayland + GNOME：不支持持久化，但支持绝对坐标
+        HostCapabilities gnome = HostSession.hostCapabilities(true,
+                new PortalBackendInfo(PortalBackendKind.GNOME, false, true));
+        assertFalse(gnome.getPersistentConsent());
+        assertTrue(gnome.getAbsolutePointer());
+
+        // 非 Wayland（X11/Windows）：Robot 固定能力——绝对坐标、无持久化
+        HostCapabilities x11 = HostSession.hostCapabilities(false, null);
+        assertFalse(x11.getPersistentConsent());
+        assertTrue(x11.getAbsolutePointer());
     }
 
     @Test

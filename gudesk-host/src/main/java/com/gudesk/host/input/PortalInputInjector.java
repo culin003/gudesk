@@ -5,6 +5,8 @@ import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
 import com.gudesk.common.spi.InputInjector;
 import com.gudesk.host.capture.RobotScreenCapturer;
+import com.gudesk.host.portal.PortalBackendDetector;
+import com.gudesk.host.portal.PortalBackendInfo;
 import com.gudesk.host.portal.PortalClient;
 import com.gudesk.host.portal.PortalContextHolder;
 import com.gudesk.host.portal.PortalException;
@@ -134,12 +136,14 @@ public class PortalInputInjector implements InputInjector {
 
     @Override
     public AdapterCapabilities capabilities() {
+        PortalBackendInfo backend = PortalBackendDetector.detectCurrent();
         return AdapterCapabilities.builder()
                 .maxWidth(4096)
                 .maxHeight(4096)
                 .maxFps(MAX_EVENT_RATE)
                 .hardwareAccelerated(false)
-                .absolutePointer(true)
+                // 绝对坐标注入（NotifyPointerMotionAbsolute）取决于后端能力，探测失败 fail-closed
+                .absolutePointer(backend.absolutePointerSupported())
                 .build();
     }
 

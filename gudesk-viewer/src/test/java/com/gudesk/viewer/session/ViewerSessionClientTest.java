@@ -1,6 +1,7 @@
 package com.gudesk.viewer.session;
 
 import com.gudesk.common.crypto.SessionCipher;
+import com.gudesk.common.proto.GuDeskProto.HostCapabilities;
 import com.gudesk.common.proto.GuDeskProto.SessionMessage;
 import com.gudesk.common.proto.GuDeskProto.SessionNegotiate;
 import com.gudesk.common.proto.GuDeskProto.SessionNegotiateAck;
@@ -72,6 +73,7 @@ class ViewerSessionClientTest {
             CountDownLatch frameDecoded = new CountDownLatch(2);
             AtomicReference<int[]> frameSize = new AtomicReference<>();
             AtomicReference<String> failure = new AtomicReference<>();
+            AtomicReference<boolean[]> caps = new AtomicReference<>();
             ViewerSessionClient client = new ViewerSessionClient(new StubDecoder(), null,
                     new ViewerSessionClient.Listener() {
                         @Override
@@ -96,6 +98,11 @@ class ViewerSessionClientTest {
                         }
 
                         @Override
+                        public void onCapabilities(boolean persistentConsent, boolean absolutePointer) {
+                            caps.set(new boolean[]{persistentConsent, absolutePointer});
+                        }
+
+                        @Override
                         public void onClosed(String reason) {
                         }
                     });
@@ -103,6 +110,10 @@ class ViewerSessionClientTest {
             client.connect("127.0.0.1", host.port(), PASSWORD);
             assertTrue(connected.await(10, TimeUnit.SECONDS), "应收到 onConnected");
             assertNull(failure.get(), "不应连接失败: " + failure.get());
+            // 假被控端下发的能力位应经 onCapabilities 回调原样送达
+            assertTrue(awaitCondition(2_000, () -> caps.get() != null), "应收到被控端能力位");
+            assertTrue(caps.get()[0], "persistentConsent 应为 true");
+            assertTrue(caps.get()[1], "absolutePointer 应为 true");
 
             // 假被控端 ESTABLISHED 后自动下发 2 帧 640x480 视频 → 解码直通回调
             assertTrue(frameDecoded.await(5, TimeUnit.SECONDS), "应收到并解码 2 帧视频");
@@ -287,7 +298,11 @@ class ViewerSessionClientTest {
                     ep.activateCipher(SessionCipher.init(shared, salt, false));
                 } else if (password.equals(negotiate.getPasswordProof())) {
                     ep.send(SessionMessage.newBuilder()
-                            .setNegotiateAck(SessionNegotiateAck.newBuilder().setAuthorized(true))
+                            .setNegotiateAck(SessionNegotiateAck.newBuilder()
+                                    .setAuthorized(true)
+                                    .setCapabilities(HostCapabilities.newBuilder()
+                                            .setPersistentConsent(true)
+                                            .setAbsolutePointer(true)))
                             .build());
                     ep.setState(SessionState.ESTABLISHED);
                     // 下发 2 帧视频（假 H.264 负载，StubDecoder 直通）

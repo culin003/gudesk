@@ -88,6 +88,14 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
         /** 心跳单向延迟采样（RTT/2，毫秒） */
         void onLatency(long oneWayMs);
 
+        /**
+         * 被控端能力（authorized=true 时携带，紧随 {@link #onConnected} 回调）：
+         * persistentConsent=授权可持久化（restore token 免弹窗）、
+         * absolutePointer=输入注入支持绝对坐标。旧版被控端不携带时均为 false。
+         */
+        default void onCapabilities(boolean persistentConsent, boolean absolutePointer) {
+        }
+
         /** 已建立会话关闭（对端断开/心跳超时/本端主动断开） */
         void onClosed(String reason);
     }
@@ -264,7 +272,7 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
             return;
         }
         if (ack.getAuthorized()) {
-            onAuthorized();
+            onAuthorized(ack);
         } else {
             String reason = ack.getReason() == null || ack.getReason().isBlank()
                     ? "被控端拒绝连接" : ack.getReason();
@@ -307,8 +315,8 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
         }
     }
 
-    /** 最终 Ack（authorized=true）：会话建立 */
-    private void onAuthorized() {
+    /** 最终 Ack（authorized=true）：会话建立，携带被控端能力位 */
+    private void onAuthorized(SessionNegotiateAck ack) {
         SessionTransport ep = endpoint;
         if (ep == null) {
             return;
@@ -317,6 +325,10 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
         handshakeReported.set(true);
         ep.setState(SessionState.ESTABLISHED); // 启动会话内心跳
         listener.onConnected();
+        // 能力位（旧版被控端不携带 capabilities 时 hasCapabilities=false，默认 false）
+        boolean persistentConsent = ack.hasCapabilities() && ack.getCapabilities().getPersistentConsent();
+        boolean absolutePointer = ack.hasCapabilities() && ack.getCapabilities().getAbsolutePointer();
+        listener.onCapabilities(persistentConsent, absolutePointer);
     }
 
     // ------------------------------------------------------------------

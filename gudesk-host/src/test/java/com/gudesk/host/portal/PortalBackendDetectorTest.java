@@ -1,5 +1,10 @@
 package com.gudesk.host.portal;
 
+import com.gudesk.host.capture.PortalScreenCapturer;
+import com.gudesk.host.capture.RobotScreenCapturer;
+import com.gudesk.host.input.PortalInputInjector;
+import com.gudesk.host.input.RobotInputInjector;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -120,5 +125,41 @@ class PortalBackendDetectorTest {
                 "org.freedesktop.impl.portal.desktop.KDE"));
 
         assertEquals(PortalBackendKind.KDE, info.backendKind(), "XDG_CURRENT_DESKTOP 小写应仍消歧到 KDE");
+    }
+
+    // ------------------------------------------------------------------
+    // adapter capabilities 能力位跟随后端探测（detectCurrent 测试桩注入）
+    // ------------------------------------------------------------------
+
+    @AfterEach
+    void resetBackendCache() {
+        PortalBackendDetector.resetForTest();
+    }
+
+    @Test
+    void Portal适配器能力位跟随后端探测() {
+        // KDE：支持持久化授权 + 绝对坐标
+        PortalBackendDetector.installForTest(new PortalBackendInfo(PortalBackendKind.KDE, true, true));
+        assertTrue(new PortalScreenCapturer().capabilities().isPersistentConsent());
+        assertTrue(new PortalInputInjector().capabilities().isAbsolutePointer());
+
+        // GNOME：不支持持久化授权，但支持绝对坐标
+        PortalBackendDetector.installForTest(new PortalBackendInfo(PortalBackendKind.GNOME, false, true));
+        assertFalse(new PortalScreenCapturer().capabilities().isPersistentConsent());
+        assertTrue(new PortalInputInjector().capabilities().isAbsolutePointer());
+
+        // GTK：两者均不支持
+        PortalBackendDetector.installForTest(new PortalBackendInfo(PortalBackendKind.GTK, false, false));
+        assertFalse(new PortalInputInjector().capabilities().isAbsolutePointer());
+    }
+
+    @Test
+    void Robot适配器能力位固定() {
+        // Robot 注入支持绝对坐标（mouseMove），无持久化授权
+        assertTrue(new RobotInputInjector().capabilities().isAbsolutePointer());
+        assertFalse(new RobotInputInjector().capabilities().isPersistentConsent());
+        // capturer 不报告输入注入能力
+        assertFalse(new RobotScreenCapturer().capabilities().isAbsolutePointer());
+        assertFalse(new RobotScreenCapturer().capabilities().isPersistentConsent());
     }
 }

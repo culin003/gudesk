@@ -143,3 +143,40 @@ powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
 可先本机验证）。Windows 端开机自启（注册表 Run 键/启动文件夹）未内置，后续版本提供。
 
 > 注：当前使用系统 `mvn`（Apache Maven 3.9.16，位于 `/home/cooper/MySoft/idea-IU-262.9437.185/plugins/maven-plugin/lib/maven3`，已加入 PATH），未生成 Maven Wrapper。
+
+## Wayland 授权行为与无人值守配置
+
+被控端在 Wayland 会话下经 xdg-desktop-portal 捕获屏幕与注入输入，授权行为由
+**桌面后端**决定。不同后端的持久化授权（restore token，免弹窗）与绝对坐标注入
+能力如下（运行时按会话总线注册的 `org.freedesktop.impl.portal.desktop.*` 探测，
+能力位随握手 Ack 下发、主控端状态栏可见）：
+
+| 桌面后端 | 持久化授权（免弹窗） | 绝对坐标注入 | 说明 |
+|---|---|---|---|
+| KDE（xdg-desktop-portal-kde） | ✅ | ✅ | 支持无人值守，推荐 |
+| wlroots（xdg-desktop-portal-wlr，Sway 等） | ✅ | ✅ | 支持无人值守 |
+| Hyprland（xdg-desktop-portal-hyprland） | ✅ | ✅ | 支持无人值守 |
+| GNOME（xdg-desktop-portal-gnome） | ❌ | ✅ | 每次连接都需用户确认 |
+| GTK（xdg-desktop-portal-gtk，XFCE/MATE 等） | ❌ | ❌ | 兜底后端，无持久化、无绝对坐标 |
+
+### 无人值守配置（L1：一次配置，重复连接免弹窗）
+
+仅 KDE / wlroots / Hyprland 后端支持。首次配置：
+
+```bash
+gudesk --host-only --enable-unattended
+```
+
+流程：探测后端 → 弹出一次授权框（勾选键盘/鼠标）→ restore token 写入
+`~/.gudesk/portal_token`（POSIX 600）。此后被控端重启、后续连接均**免弹窗**自动恢复。
+GNOME/GTK 后端会明确提示「不支持持久化授权」并退出（退出码 2）。
+
+### 已知限制
+
+- **GNOME 每次连接必弹**：其 RemoteDesktop 实现不支持授权持久化，无人值守不可用。
+- **登录界面（greeter）不支持**：gdm/sddm 的登录会话不提供 portal 授权，无法在此阶段无人值守。
+- **XWayland 半捕获**：会话同时存在 `WAYLAND_DISPLAY` 与 `DISPLAY` 时，原生 Wayland
+  应用窗口可能捕获为黑块（仅 XWayland 应用正常），被控端会输出警告日志。
+- **授权撤销后降级**：用户在系统设置撤销授权后，已存 restore token 失效，下次连接
+  自动降级为全新授权弹窗（不会硬失败）。
+- **单显示器语义**：portal 捆绑会话固定单来源 MONITOR，多显示器合并捕获为当前实现限制。

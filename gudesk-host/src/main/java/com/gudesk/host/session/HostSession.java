@@ -4,6 +4,7 @@ import com.gudesk.common.crypto.CryptoUtil;
 import com.gudesk.common.crypto.SessionCipher;
 import com.gudesk.common.proto.GuDeskProto.AuthorizeRequest;
 import com.gudesk.common.proto.GuDeskProto.AuthorizeResponse;
+import com.gudesk.common.proto.GuDeskProto.HostCapabilities;
 import com.gudesk.common.proto.GuDeskProto.KeyFrameRequest;
 import com.gudesk.common.proto.GuDeskProto.KeyEvent;
 import com.gudesk.common.proto.GuDeskProto.MouseButtonEvent;
@@ -30,6 +31,8 @@ import com.gudesk.host.capture.RobotScreenCapturer;
 import com.gudesk.host.encode.JavaCvVideoEncoder;
 import com.gudesk.host.input.PortalInputInjector;
 import com.gudesk.host.input.RobotInputInjector;
+import com.gudesk.host.portal.PortalBackendDetector;
+import com.gudesk.host.portal.PortalBackendInfo;
 import com.google.protobuf.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -395,12 +398,39 @@ public final class HostSession implements SessionEventListener {
         }
         transport.send(SessionMessage.newBuilder()
                 .setNegotiateAck(SessionNegotiateAck.newBuilder()
-                        .setAuthorized(true))
+                        .setAuthorized(true)
+                        .setCapabilities(detectHostCapabilities()))
                 .build());
         established.set(true);
         transport.setState(SessionState.ESTABLISHED); // 启动会话内心跳
         LOG.info("会话已建立: {}", transport.remoteDescription());
         startMediaPipeline();
+    }
+
+    /** 探测被控端能力（下发给主控端 UI 展示）：Wayland 走 portal 后端探测，其余走 Robot 固定能力 */
+    private HostCapabilities detectHostCapabilities() {
+        boolean wayland = RobotScreenCapturer.isWaylandSession(System.getenv());
+        PortalBackendInfo backend = wayland ? PortalBackendDetector.detectCurrent() : null;
+        if (wayland && backend != null && backend.isKnown() && !backend.persistentSupported()) {
+            LOG.warn("当前 portal 后端（{}）不支持持久化授权，每次连接均需用户确认（无人值守不可用）",
+                    backend.backendKind());
+        }
+        return hostCapabilities(wayland, backend);
+    }
+
+    /** 能力位映射（纯函数，注入会话类型与后端探测结果，便于单测） */
+    static HostCapabilities hostCapabilities(boolean waylandSession, PortalBackendInfo backend) {
+        if (waylandSession && backend != null) {
+            return HostCapabilities.newBuilder()
+                    .setPersistentConsent(backend.persistentSupported())
+                    .setAbsolutePointer(backend.absolutePointerSupported())
+                    .build();
+        }
+        // X11/Windows：Robot 注入支持绝对坐标（mouseMove），无持久化授权
+        return HostCapabilities.newBuilder()
+                .setPersistentConsent(false)
+                .setAbsolutePointer(true)
+                .build();
     }
 
     /** 授权拒绝：回 Ack{authorized=false, reason} 并关闭 */

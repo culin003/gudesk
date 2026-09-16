@@ -5,6 +5,8 @@ import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
 import com.gudesk.common.spi.NativeFrame;
 import com.gudesk.common.spi.ScreenCapturer;
+import com.gudesk.host.portal.PortalBackendDetector;
+import com.gudesk.host.portal.PortalBackendInfo;
 import com.gudesk.host.portal.PortalClient;
 import com.gudesk.host.portal.PortalControlMessage;
 import com.gudesk.host.portal.PortalContextHolder;
@@ -310,14 +312,14 @@ public class PortalScreenCapturer implements ScreenCapturer {
 
     @Override
     public AdapterCapabilities capabilities() {
+        PortalBackendInfo backend = PortalBackendDetector.detectCurrent();
         return AdapterCapabilities.builder()
                 .maxWidth(4096)
                 .maxHeight(4096)
                 .maxFps(60)
                 .hardwareAccelerated(false)
-                // portal RemoteDesktop 支持 NotifyPointerMotionAbsolute（能力位详值
-                // 依赖后端探测，Task 5 接入 PortalBackendDetector 后完善）
-                .absolutePointer(true)
+                // 授权持久化（restore token）取决于后端能力，探测失败 fail-closed 为 false
+                .persistentConsent(backend.persistentSupported())
                 .addSupportedPixelFormat(PIXEL_FORMAT)
                 .build();
     }
