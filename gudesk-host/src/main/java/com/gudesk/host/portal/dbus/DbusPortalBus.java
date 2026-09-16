@@ -123,7 +123,7 @@ public final class DbusPortalBus implements PortalBus {
      *
      * @throws PortalException 两者均未设置时
      */
-    static String resolveSessionBusAddress(Map<String, String> env) throws PortalException {
+    public static String resolveSessionBusAddress(Map<String, String> env) throws PortalException {
         String address = env.get("DBUS_SESSION_BUS_ADDRESS");
         if (address != null && !address.isBlank()) {
             return address.trim();

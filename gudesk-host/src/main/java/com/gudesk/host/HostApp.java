@@ -69,6 +69,10 @@ public class HostApp {
                 System.exit(runSetPassword(args));
                 return;
             }
+            if ("--enable-unattended".equals(args[0])) {
+                System.exit(com.gudesk.host.portal.PortalUnattendedHelper.enableUnattended(System.out));
+                return;
+            }
         }
         System.exit(runServer(args == null ? new String[0] : args));
     }
