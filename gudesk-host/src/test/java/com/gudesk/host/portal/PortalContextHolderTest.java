@@ -2,7 +2,9 @@ package com.gudesk.host.portal;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -313,5 +315,63 @@ class PortalContextHolderTest {
         assertTrue(invalidated.await(2, TimeUnit.SECONDS), "Closed 信号应异步触发 invalidate");
         assertFalse(lease.isValid(), "在途租约随之失效");
         assertTrue(createdBuses.get(0).busClosed, "会话总线被关闭");
+    }
+
+    // ------------------------------------------------------------------
+    // restore token 跨进程持久化（tokenStore 接线）
+    // ------------------------------------------------------------------
+
+    /** 构造带持久化 store 的 Holder（工厂记录 createdBuses），并安装为进程级实例 */
+    private PortalContextHolder newHolderWithStore(PortalTokenStore store) {
+        PortalContextHolder holder = new PortalContextHolder(() -> {
+            FakeBus bus = new FakeBus();
+            createdBuses.add(bus);
+            return bus;
+        }, Duration.ofSeconds(1), store);
+        PortalContextHolder.installForTest(holder);
+        return holder;
+    }
+
+    @Test
+    void token持久化_新Holder实例从store恢复免弹窗(@TempDir Path dir) throws Exception {
+        PortalTokenStore store = new PortalTokenStore(dir.resolve("portal_token"));
+        // 首个 Holder：建会话签发 token 并持久化
+        PortalContextHolder first = newHolderWithStore(store);
+        String issued;
+        try (PortalContextHolder.Lease lease = first.acquire()) {
+            issued = lease.session().restoreToken();
+            assertNotNull(issued);
+        }
+        assertEquals(issued, store.load().token(), "会话建立后 token 应已落盘");
+
+        // 新 Holder 实例（同一 store 文件，模拟进程重启）：acquire 应从 store 恢复 token
+        PortalContextHolder second = newHolderWithStore(store);
+        try (PortalContextHolder.Lease lease = second.acquire()) {
+            assertNotNull(lease.session());
+            assertEquals(issued, createdBuses.get(1).restoreTokenReceived,
+                    "新实例首次建会话应携带持久化 token 恢复授权");
+        }
+    }
+
+    @Test
+    void token后端标识不符_跳过恢复改为全新授权(@TempDir Path dir) throws Exception {
+        PortalTokenStore store = new PortalTokenStore(dir.resolve("portal_token"));
+        store.save("definitely-not-current-desktop", "stale-token");
+
+        PortalContextHolder holder = newHolderWithStore(store);
+        try (PortalContextHolder.Lease lease = holder.acquire()) {
+            assertNotNull(lease.session());
+            assertNull(createdBuses.get(0).restoreTokenReceived,
+                    "后端不符时应跳过恢复，以无 token 全新授权");
+        }
+    }
+
+    @Test
+    void store无token_全新授权不恢复(@TempDir Path dir) throws Exception {
+        PortalTokenStore store = new PortalTokenStore(dir.resolve("portal_token"));
+        PortalContextHolder holder = newHolderWithStore(store);
+        try (PortalContextHolder.Lease lease = holder.acquire()) {
+            assertNull(createdBuses.get(0).restoreTokenReceived, "无已存 token 时应全新授权");
+        }
     }
 }

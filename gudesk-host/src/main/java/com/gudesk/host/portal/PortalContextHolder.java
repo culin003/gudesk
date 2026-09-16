@@ -46,6 +46,8 @@ public final class PortalContextHolder {
 
     private final Supplier<PortalBus> busFactory;
     private final Duration consentTimeout;
+    /** restore token 跨进程持久化（null = 禁用，测试默认） */
+    private final PortalTokenStore tokenStore;
     /** 会话失效监听器（参数为失效原因） */
     private final List<Consumer<String>> invalidationListeners = new CopyOnWriteArrayList<>();
 
@@ -54,13 +56,19 @@ public final class PortalContextHolder {
     private String lastRestoreToken;
     private int refCount;
 
-    /** 包私有构造：生产经 {@link #getInstance()}，测试注入 FakeBus 工厂 */
+    /** 包私有构造：生产经 {@link #getInstance()}，测试注入 FakeBus 工厂（token 持久化禁用） */
     PortalContextHolder(Supplier<PortalBus> busFactory, Duration consentTimeout) {
-        this.busFactory = Objects.requireNonNull(busFactory, "busFactory");
-        this.consentTimeout = Objects.requireNonNull(consentTimeout, "consentTimeout");
+        this(busFactory, consentTimeout, null);
     }
 
-    /** 进程级实例（懒加载；生产环境使用真实 D-Bus 总线） */
+    PortalContextHolder(Supplier<PortalBus> busFactory, Duration consentTimeout,
+                        PortalTokenStore tokenStore) {
+        this.busFactory = Objects.requireNonNull(busFactory, "busFactory");
+        this.consentTimeout = Objects.requireNonNull(consentTimeout, "consentTimeout");
+        this.tokenStore = tokenStore;
+    }
+
+    /** 进程级实例（懒加载；生产环境使用真实 D-Bus 总线 + token 持久化存储） */
     public static PortalContextHolder getInstance() {
         PortalContextHolder holder = instance;
         if (holder == null) {
@@ -68,7 +76,8 @@ public final class PortalContextHolder {
                 if (instance == null) {
                     instance = new PortalContextHolder(
                             () -> new DbusPortalBus(DEFAULT_CONSENT_TIMEOUT),
-                            DEFAULT_CONSENT_TIMEOUT);
+                            DEFAULT_CONSENT_TIMEOUT,
+                            new PortalTokenStore());
                 }
                 holder = instance;
             }
@@ -114,6 +123,11 @@ public final class PortalContextHolder {
 
     /** 建立捆绑会话：优先用记忆的 restore token 恢复，失败（token 被撤销）则全新授权重试一次 */
     private void openSession() throws PortalException {
+        // 首次建立（进程内无记忆）时从持久化 store 恢复 token；换桌面环境（后端标识不符）
+        // 时跳过，省一次注定失败的恢复往返
+        if (lastRestoreToken == null && tokenStore != null) {
+            restoreFromStore();
+        }
         PortalClient newClient = new PortalClient(busFactory.get());
         PortalSession opened;
         try {
@@ -145,11 +159,46 @@ public final class PortalContextHolder {
         this.client = newClient;
         this.session = opened;
         this.lastRestoreToken = opened.restoreToken();
+        // 签发了新 token（首次授权或降级重试后）→ 跨进程持久化，下次免弹窗
+        if (opened.restoreToken() != null) {
+            persistToken(opened.restoreToken());
+        }
         // Closed 信号接线：portal 主动关闭会话（用户撤销授权/后端重启）→ 通知所有租约使用者。
         // 回调在 dbus 信号分发线程上执行，切虚拟线程做 invalidate（其中会关闭总线连接，
         // 不能阻塞在分发线程上）。
         newClient.setSessionClosedListener(() -> Thread.ofVirtual().start(
                 () -> invalidate("portal 主动关闭会话（Closed 信号）")));
+    }
+
+    /** 从持久化 store 恢复上次的 restore token（后端标识匹配才采用） */
+    private void restoreFromStore() {
+        try {
+            PortalTokenStore.StoredToken stored = tokenStore.load();
+            if (stored == null) {
+                return;
+            }
+            String current = PortalTokenStore.currentBackendId(System.getenv());
+            if (!current.equals(stored.backendId())) {
+                LOG.info("已存 restore token 的后端({})与当前({})不符，跳过恢复，改为全新授权",
+                        stored.backendId(), current);
+                return;
+            }
+            this.lastRestoreToken = stored.token();
+            LOG.info("从持久化恢复 restore token（后端 {}，签发于 {}），下次 acquire 尝试免弹窗恢复",
+                    stored.backendId(), stored.issuedAtMillis());
+        } catch (RuntimeException e) {
+            LOG.warn("restore token 恢复读取失败，按无已存 token 处理: {}", e.getMessage());
+        }
+    }
+
+    /** 持久化新签发的 restore token（写失败仅 WARN，不影响会话） */
+    private void persistToken(String token) {
+        try {
+            tokenStore.save(PortalTokenStore.currentBackendId(System.getenv()), token);
+            LOG.info("restore token 已持久化，后续启动免弹窗恢复");
+        } catch (Exception e) {
+            LOG.warn("restore token 持久化失败（不影响当前会话）: {}", e.getMessage());
+        }
     }
 
     /** Lease 释放（引用计数归零时关闭会话与总线，token 保留供下次恢复） */
