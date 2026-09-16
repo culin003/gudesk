@@ -85,15 +85,17 @@ export JAVA_HOME=/home/cooper/MySoft/jdk/zulu21.52.15-ca-jdk21.0.12-linux_x64/
 ./scripts/package-linux.sh
 ```
 
-流程：`mvn clean package -DskipTests` → 组装 input（剔除 Windows jar）→ 编译测试适配器 →
-`jlink` 裁剪运行时 → `jpackage --type app-image` → 构建 deb → 体积报告。可重复执行。
+流程：`mvn clean package -DskipTests` → 编译 portal helper（`make -C native/portal-helper`，
+需 gcc + libpipewire-0.3-dev，严格检查）→ 组装 input（剔除 Windows jar）→ 编译测试适配器 →
+`jlink` 裁剪运行时 → `jpackage --type app-image` → 构建 deb（helper 装入 `/usr/lib/gudesk/`，
+依赖 `libpipewire-0.3-0`）→ 体积报告。可重复执行。
 
-实测产物（2026-09-14）：
+实测产物（2026-09-16）：
 
 | 产物 | 体积 |
 |---|---|
-| `dist/gudesk/`（app-image，入口 `bin/gudesk`） | 108M |
-| `dist/gudesk_0.1.0_amd64.deb` | **78M（≤80MB 目标）** |
+| `dist/gudesk/`（app-image，入口 `bin/gudesk`） | 111M |
+| `dist/gudesk_0.1.0_amd64.deb` | **80M（≤80MB 目标）** |
 
 deb 构建路径自动选择：Debian/Ubuntu（有 `dpkg-deb`）用 jpackage 原生 `--type deb` 并经
 `dpkg-deb -R/-b` 重打包注入 XDG 文件与 `/usr/bin/gudesk` 符号链接；非 Debian 系（本机）

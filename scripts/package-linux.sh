@@ -51,6 +51,16 @@ RUNTIME_MODULES="java.base,java.desktop,java.logging,java.management,java.naming
 echo "==> [1/6] Maven 构建（跳过测试；全量回归请另行执行 mvn clean package）"
 mvn -q clean package -DskipTests
 
+echo "==> [1/6] 编译 portal helper（Wayland 真实捕获用，动态链接 libpipewire）"
+for dep in gcc pkg-config; do
+    command -v "$dep" >/dev/null 2>&1 || {
+        echo "[错误] 缺少 $dep，无法编译 gudesk-portal-helper（安装后重试）"; exit 1; }
+done
+pkg-config --exists libpipewire-0.3 || {
+    echo "[错误] 缺少 libpipewire-0.3 开发包（Debian/Ubuntu: libpipewire-0.3-dev）"; exit 1; }
+make -C native/portal-helper clean all
+echo "    helper 产物: native/portal-helper/gudesk-portal-helper"
+
 echo "==> [2/6] 组装 jpackage input 目录（剔除 Windows 平台 jar）"
 rm -rf dist
 mkdir -p dist/jpackage-input
@@ -113,9 +123,14 @@ if command -v dpkg-deb >/dev/null 2>&1; then
         deb=$(ls dist/"${APP_NAME}"_*.deb | head -1)
         rm -rf dist/deb-root
         dpkg-deb -R "$deb" dist/deb-root
+        # 追加 helper 运行时依赖（jpackage 生成的 control 无 Depends 字段）
+        if ! grep -q '^Depends:' dist/deb-root/DEBIAN/control; then
+            sed -i '/^Package:/a Depends: libpipewire-0.3-0' dist/deb-root/DEBIAN/control
+        fi
         install -Dm644 packaging/gudesk.desktop dist/deb-root/usr/share/applications/gudesk.desktop
         install -Dm644 packaging/gudesk-autostart.desktop dist/deb-root/etc/xdg/autostart/gudesk.desktop
         install -Dm644 packaging/gudesk.png "dist/deb-root/opt/$APP_NAME/lib/gudesk.png"
+        install -Dm755 native/portal-helper/gudesk-portal-helper dist/deb-root/usr/lib/gudesk/gudesk-portal-helper
         mkdir -p dist/deb-root/usr/bin
         ln -sf "/opt/$APP_NAME/bin/$APP_NAME" "dist/deb-root/usr/bin/$APP_NAME"
         dpkg-deb -b dist/deb-root "$deb"
@@ -127,12 +142,13 @@ else
         echo "    未检测到 dpkg-deb（非 Debian 系）：基于 app-image 用 ar/tar 手工构建 deb" >&2
         local staging=dist/deb-staging control_dir=dist/deb-control
         rm -rf "$staging" "$control_dir"
-        # data：/opt/gudesk（app-image）+ desktop 文件 + /usr/bin 符号链接
+        # data：/opt/gudesk（app-image）+ desktop 文件 + /usr/bin 符号链接 + portal helper
         mkdir -p "$staging/opt/$APP_NAME" "$staging/usr/share/applications" \
-            "$staging/etc/xdg/autostart" "$staging/usr/bin"
+            "$staging/etc/xdg/autostart" "$staging/usr/bin" "$staging/usr/lib/gudesk"
         cp -a "dist/$APP_NAME/." "$staging/opt/$APP_NAME/"
         cp packaging/gudesk.desktop "$staging/usr/share/applications/gudesk.desktop"
         cp packaging/gudesk-autostart.desktop "$staging/etc/xdg/autostart/gudesk.desktop"
+        install -m755 native/portal-helper/gudesk-portal-helper "$staging/usr/lib/gudesk/gudesk-portal-helper"
         ln -s "/opt/$APP_NAME/bin/$APP_NAME" "$staging/usr/bin/$APP_NAME"
         # control
         mkdir -p "$control_dir"
@@ -145,6 +161,7 @@ Architecture: amd64
 Maintainer: GuDesk Project <dev@gudesk.example>
 Section: net
 Priority: optional
+Depends: libpipewire-0.3-0
 Installed-Size: $installed_kb
 Description: GuDesk remote desktop (viewer + host + server)
  GuDesk cross-platform remote desktop: viewer UI, host service and
