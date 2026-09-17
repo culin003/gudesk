@@ -86,9 +86,9 @@ Write-Host "==> [5/6] jpackage app-image（dist\$AppName）"
     --runtime-image dist\runtime `
     --dest dist --app-version $Version `
     --icon packaging\gudesk.ico `
-    --java-options=-XX:+UseZGC `
-    --java-options=--enable-native-access=ALL-UNNAMED `
-    --java-options=-Xmx1g
+    --java-options "-XX:+UseZGC" `
+    --java-options "--enable-native-access=ALL-UNNAMED" `
+    --java-options "-Xmx1g"
 if ($LASTEXITCODE -ne 0) { Write-Error "jpackage app-image 失败" }
 
 Write-Host "==> [6/6] zip 打包自包含绿色版（dist\${AppName}-${Version}-win64.zip）"
