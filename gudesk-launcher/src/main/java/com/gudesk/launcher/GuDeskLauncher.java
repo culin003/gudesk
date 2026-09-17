@@ -3,11 +3,9 @@ package com.gudesk.launcher;
 import com.gudesk.host.HostApp;
 import com.gudesk.server.ServerApp;
 import com.gudesk.viewer.ViewerApp;
+import javafx.application.Application;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,8 +14,8 @@ import java.util.List;
  *
  * <p>运行模式：
  * <ul>
- *   <li>无参数（默认）：启动主控端 JavaFX UI + 后台被控服务（UI 关闭时进程退出，
- *       被控服务随 shutdown hook 优雅关闭）；</li>
+ *   <li>无参数（默认）：启动单窗口双区合并应用 {@link GuDeskClientApp}（首页左「被控」
+ *       右「主控」，连接后切视频会话视图；UI 关闭时进程退出）；</li>
  *   <li>{@code --host-only [args]}：仅被控端（其余参数透传 {@link HostApp}，如
  *       {@code --auto-accept --port 48901 --set-password &lt;pwd&gt;}）；</li>
  *   <li>{@code --viewer-only [args]}：仅主控端（透传 {@link ViewerApp}，如
@@ -35,11 +33,6 @@ import java.util.List;
 public final class GuDeskLauncher {
 
     private static final String VERSION = "0.1.0-SNAPSHOT";
-
-    /** deb 安装后的入口路径（autostart desktop 文件 Exec 回退值） */
-    private static final String AUTOSTART_EXEC = "/opt/gudesk/bin/gudesk --host-only";
-    /** 系统级 XDG autostart 文件（deb 安装） */
-    private static final Path SYSTEM_AUTOSTART = Path.of("/etc/xdg/autostart/gudesk.desktop");
 
     private GuDeskLauncher() {
     }
@@ -82,18 +75,11 @@ public final class GuDeskLauncher {
             return;
         }
 
-        // 默认合并模式：后台被控服务（失败不拖垮 UI）+ 主控端 UI
+        // 默认合并模式：单窗口双区应用（主控 + 被控）
         printAutostartStatus();
-        System.out.printf("GuDesk v%s 合并模式：主控端 UI + 后台被控服务%n", VERSION);
-        Thread hostService = new Thread(() -> {
-            int code = HostApp.runServer(passThrough);
-            if (code != 0) {
-                System.out.println("[警告] 后台被控服务启动失败（退出码 " + code + "），主控端 UI 继续运行");
-            }
-        }, "gudesk-host-service");
-        hostService.start();
-        ViewerApp.main(passThrough);
-        // UI 关闭后显式退出（被控服务的 Netty 非守护线程会阻止 JVM 自然退出）
+        System.out.printf("GuDesk v%s 合并模式：单窗口（主控 + 被控）%n", VERSION);
+        Application.launch(GuDeskClientApp.class, passThrough);
+        // UI 关闭后显式退出（Netty/媒体等后台线程即使残留也不阻塞进程退出）
         System.exit(0);
     }
 
@@ -102,7 +88,7 @@ public final class GuDeskLauncher {
         System.out.println("用法: gudesk [模式] [参数...]");
         System.out.println();
         System.out.println("模式:");
-        System.out.println("  (无参数)            主控端 UI + 后台被控服务（合并默认）");
+        System.out.println("  (无参数)            单窗口双区应用（主控 + 被控，合并默认）");
         System.out.println("  --host-only         仅被控端（参数透传 HostApp: --auto-accept --port N --server host:port --set-password pwd --selftest）");
         System.out.println("  --viewer-only       仅主控端（参数透传 ViewerApp: --connect ID|ip:port --password pwd --server host:port --auto 秒 --prefer-relay --selftest）");
         System.out.println("  --server-only       仅服务器（参数透传 ServerApp: --signaling-port N --stun-port N --relay-port N --selftest）");
@@ -114,29 +100,14 @@ public final class GuDeskLauncher {
     }
 
     // ------------------------------------------------------------------
-    // XDG autostart 用户级开关
+    // XDG autostart 用户级开关（逻辑委托 AutostartController）
     // ------------------------------------------------------------------
 
-    /** 用户级 autostart 文件（优先于系统级 /etc/xdg/autostart） */
-    private static Path userAutostartFile() {
-        return Path.of(System.getProperty("user.home"), ".config", "autostart", "gudesk.desktop");
-    }
-
     private static void setAutostart(boolean enabled) {
-        Path file = userAutostartFile();
-        String content = "[Desktop Entry]\n"
-                + "Type=Application\n"
-                + "Name=GuDesk Host Service\n"
-                + "Comment=GuDesk 被控服务（用户登录后自动启动）\n"
-                + "Exec=" + resolveAutostartExec() + "\n"
-                + "Terminal=false\n"
-                + "X-GNOME-Autostart-enabled=true\n"
-                + "Hidden=" + (enabled ? "false" : "true") + "\n";
         try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, content, StandardCharsets.UTF_8);
+            AutostartController.setEnabled(enabled);
             System.out.println((enabled ? "开机自启已开启" : "开机自启已关闭（Hidden=true，用户级优先于系统级）")
-                    + "，写入 " + file);
+                    + "，写入 " + AutostartController.userAutostartFile());
         } catch (IOException e) {
             System.out.println("[错误] 写入自启设置失败: " + e.getMessage());
         }
@@ -144,39 +115,6 @@ public final class GuDeskLauncher {
 
     /** 启动被控服务时打印自启状态提示 */
     private static void printAutostartStatus() {
-        try {
-            Path userFile = userAutostartFile();
-            if (Files.exists(userFile) && Files.readString(userFile).contains("Hidden=true")) {
-                System.out.println("开机自启：已通过用户设置关闭（" + userFile + "，可运行 gudesk --enable-autostart 重新启用）");
-                return;
-            }
-            if (Files.exists(SYSTEM_AUTOSTART) || Files.exists(userFile)) {
-                System.out.println("开机自启：已随系统启动（XDG autostart，登录后自动运行被控服务；gudesk --disable-autostart 可关闭）");
-            } else {
-                System.out.println("开机自启：未检测到系统级 XDG autostart 配置（deb 安装后自动配置；可运行 gudesk --enable-autostart 手动启用）");
-            }
-        } catch (Exception e) {
-            System.out.println("[警告] 读取自启状态失败: " + e.getMessage());
-        }
-    }
-
-    /** autostart Exec 解析：优先 /opt/gudesk/bin/gudesk（deb 安装），其次从本类 jar 位置推导 app-image 布局 */
-    private static String resolveAutostartExec() {
-        Path installed = Path.of("/opt/gudesk/bin/gudesk");
-        if (Files.isExecutable(installed)) {
-            return installed + " --host-only";
-        }
-        try {
-            Path jar = Path.of(GuDeskLauncher.class.getProtectionDomain()
-                    .getCodeSource().getLocation().toURI());
-            // app-image 布局: <image>/lib/app/gudesk-launcher.jar → <image>/bin/gudesk
-            Path bin = jar.getParent().getParent().getParent().resolve("bin/gudesk");
-            if (Files.isExecutable(bin)) {
-                return bin + " --host-only";
-            }
-        } catch (Exception ignored) {
-            // 回退到安装前缀常量
-        }
-        return AUTOSTART_EXEC;
+        System.out.println(AutostartController.statusText());
     }
 }

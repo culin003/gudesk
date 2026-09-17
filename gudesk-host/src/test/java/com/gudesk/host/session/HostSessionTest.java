@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * headless 环境失败即关闭会话（不影响已断言的 Ack），有图形环境时短暂启动后随
  * 会话关闭清理，两种环境测试均稳定。本测试类在 {@code @BeforeAll} 显式钉住
  * capturer 为 RobotScreenCapturer：Wayland 桌面上 HostSession 的
- * {@code preferOnWaylandSession} 否则会选择 Portal 捕获实现，进而连接真实
+ * {@code selectPlatformDefault} 否则会选择 Portal 捕获实现，进而连接真实
  * xdg-desktop-portal 拿到真实屏幕流，破坏单测封闭性。
  */
 class HostSessionTest {
@@ -65,7 +65,7 @@ class HostSessionTest {
 
     @BeforeAll
     static void startGroup() {
-        // 钉住 capturer：避免 Wayland 桌面上 preferOnWaylandSession 触发真实 portal 会话
+        // 钉住 capturer：避免 Wayland 桌面上 selectPlatformDefault 触发真实 portal 会话
         System.setProperty("gudesk.adapter.capturer",
                 com.gudesk.host.capture.RobotScreenCapturer.class.getName());
         group = new NioEventLoopGroup(2, r -> {

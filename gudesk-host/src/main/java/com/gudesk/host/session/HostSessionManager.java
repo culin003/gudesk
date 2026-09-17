@@ -14,6 +14,9 @@ import org.slf4j.LoggerFactory;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -34,7 +37,7 @@ public final class HostSessionManager {
     /** 单会话占用提示 */
     public static final String REASON_BUSY = "被控中：已有主控会话进行";
 
-    private final HostPasswordStore.PasswordRecord password;
+    private volatile HostPasswordStore.PasswordRecord password;
     private final Authorizer authorizer;
     private final TrustStore trustStore;
     private final ConnectionGatekeeper gatekeeper;
@@ -42,12 +45,48 @@ public final class HostSessionManager {
     /** 单会话槽：最多 1 个并发"被控中"会话 */
     private final AtomicReference<HostSession> activeSession = new AtomicReference<>();
 
+    /** 会话生命周期监听器（"被控中"状态指示，UI 侧订阅并自行保证线程安全） */
+    private final List<SessionListener> sessionListeners = new CopyOnWriteArrayList<>();
+
+    /** 会话生命周期监听器：ESTABLISHED 进入"被控中"，关闭后回到"空闲" */
+    public interface SessionListener {
+        void onSessionEstablished();
+        void onSessionEnded();
+    }
+
     public HostSessionManager(HostPasswordStore.PasswordRecord password, Authorizer authorizer,
                               TrustStore trustStore, ConnectionGatekeeper gatekeeper) {
         this.password = password;
         this.authorizer = authorizer;
         this.trustStore = trustStore;
         this.gatekeeper = gatekeeper;
+    }
+
+    /** 更新密码验证记录（改密码热更新：仅影响后续新建会话，已建立会话不受影响） */
+    public void updatePassword(HostPasswordStore.PasswordRecord newPassword) {
+        this.password = Objects.requireNonNull(newPassword, "newPassword");
+    }
+
+    /** 注册会话生命周期监听器（"被控中"状态指示） */
+    public void addSessionListener(SessionListener listener) {
+        sessionListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /** 移除会话生命周期监听器 */
+    public void removeSessionListener(SessionListener listener) {
+        sessionListeners.remove(listener);
+    }
+
+    private void notifyEstablished() {
+        for (SessionListener listener : sessionListeners) {
+            listener.onSessionEstablished();
+        }
+    }
+
+    private void notifyEnded() {
+        for (SessionListener listener : sessionListeners) {
+            listener.onSessionEnded();
+        }
     }
 
     /** 是否有进行中的会话（"被控中"状态指示） */
@@ -96,7 +135,7 @@ public final class HostSessionManager {
         }
         TcpSessionEndpoint endpoint = new TcpSessionEndpoint(null, null);
         HostSession session = new HostSession(endpoint, password, authorizer, trustStore,
-                ok -> onPasswordResult(ip, ok), this::releaseSlot);
+                ok -> onPasswordResult(ip, ok), this::releaseSlot, this::notifyEstablished);
         if (!activeSession.compareAndSet(null, session)) {
             rejectWithReason(channel, REASON_BUSY); // 并发接入竞态：仅一个赢家
             return null;
@@ -150,7 +189,7 @@ public final class HostSessionManager {
         }
         UdpSessionEndpoint endpoint = new UdpSessionEndpoint(null, null, socket, peer);
         HostSession session = new HostSession(endpoint, password, authorizer, trustStore,
-                ok -> onPasswordResult(addressOf(peer), ok), this::releaseSlot);
+                ok -> onPasswordResult(addressOf(peer), ok), this::releaseSlot, this::notifyEstablished);
         if (!activeSession.compareAndSet(null, session)) {
             endpoint.close(REASON_BUSY); // 并发竞态：仅一个赢家（close 幂等关闭 socket）
             return null;
@@ -201,6 +240,9 @@ public final class HostSessionManager {
 
     private void releaseSlot(HostSession session) {
         activeSession.compareAndSet(session, null);
+        if (session.isEstablished()) {
+            notifyEnded();
+        }
     }
 
     /** 来源 IP 提取（剥离端口：锁定按 IP 维度） */

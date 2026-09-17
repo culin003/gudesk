@@ -62,4 +62,22 @@ public interface InputForwarder {
      * @param pressed true=按下，false=释放
      */
     void onKey(int keyCode, String keyChar, boolean pressed);
+
+    /**
+     * 发送组合快捷键（预设按钮用）：依次按下修饰键 → 按下主键 → 释放主键 →
+     * 逆序释放修饰键。
+     *
+     * @param modifiers 修饰键 AWT VK_* 值（按下顺序）
+     * @param keyCode   主键 AWT VK_* 值
+     */
+    default void sendShortcut(int[] modifiers, int keyCode) {
+        for (int mod : modifiers) {
+            onKey(mod, "", true);
+        }
+        onKey(keyCode, "", true);
+        onKey(keyCode, "", false);
+        for (int i = modifiers.length - 1; i >= 0; i--) {
+            onKey(modifiers[i], "", false);
+        }
+    }
 }

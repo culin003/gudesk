@@ -5,6 +5,7 @@ import com.gudesk.common.spi.AdapterException;
 import com.gudesk.common.spi.FrameRenderer;
 import com.gudesk.common.spi.SpiLoader;
 import com.gudesk.common.spi.VideoDecoder;
+import com.gudesk.viewer.decode.DecoderSelector;
 import com.gudesk.viewer.decode.JavaCvVideoDecoder;
 import com.gudesk.viewer.render.JavaFxFrameRenderer;
 import com.gudesk.viewer.session.CliSessionRunner;
@@ -73,7 +74,8 @@ public class ViewerApp {
      */
     private static int runSelftest() {
         System.out.println("=== GuDesk Viewer 自检（decoder + renderer 适配器）===");
-        // SPI 加载（失败降级到默认实现）
+        // 自动选择（硬件优先）后 SPI 加载（失败降级到默认软解）
+        DecoderSelector.selectPlatformDefault();
         VideoDecoder decoder = SpiLoader.load(VideoDecoder.class, "decoder",
                 JavaCvVideoDecoder::defaultDecoder);
         FrameRenderer renderer = SpiLoader.load(FrameRenderer.class, "renderer",

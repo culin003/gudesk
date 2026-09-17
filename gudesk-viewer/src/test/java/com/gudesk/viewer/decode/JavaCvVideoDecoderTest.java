@@ -32,8 +32,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * {@link JavaCvVideoDecoder} 单测：测试内用 bytedeco avcodec/libx264 编码 5 帧
- * 合成 H.264 Annex-B 流（不依赖 host 模块），喂给解码器做往返验证——输出帧
- * 数量/尺寸/格式与像素内容近似性；另覆盖整段拼接流的 parser NAL 切分。
+ * 合成 H.264 Annex-B 流（不依赖 host 模块），每个 packet 作为完整 access unit
+ * 直接喂给解码器做往返验证——输出帧数量/尺寸/格式与像素内容近似性。
  * javacv/ffmpeg 原生库加载失败时按 assume 优雅跳过。
  */
 class JavaCvVideoDecoderTest {
@@ -206,14 +206,10 @@ class JavaCvVideoDecoderTest {
         for (byte[] packet : packets) {
             decodePacket(packet, outputs);
         }
-        // h264 帧边界由下一帧起始码确认：流式 parser 最后一帧滞留内部缓冲，
-        // 喂入第 5 包后立即输出 4 帧（帧 1~4）
-        assertEquals(FRAMES - 1, outputs.size(), "流式滞留一帧：喂 5 包应输出前 4 帧");
-
-        // 再喂一包（重复第 5 包数据）触发滞留尾帧输出，模拟网络持续到达
-        decodePacket(packets.get(FRAMES - 1), outputs);
         decoder.stop();
-        assertEquals(FRAMES, outputs.size(), "尾帧应随下一包到达时输出");
+        // 每个 VideoFrame 已是完整 access unit（编码端 avcodec_receive_packet 输出），
+        // 直接送解码器：喂 5 包应逐一解码输出 5 帧（无 parser 滞留）
+        assertEquals(FRAMES, outputs.size(), "5 个完整 access unit 应解码输出 5 帧");
 
         for (int i = 0; i < outputs.size(); i++) {
             NativeFrame f = outputs.get(i);
@@ -235,32 +231,7 @@ class JavaCvVideoDecoderTest {
                 String.format("中心像素偏差过大: 实际 BGR=(%d,%d,%d), 期望 (%d,%d,%d)",
                         actualB, actualG, actualR, expected[0], expected[1], expected[2]));
         System.out.printf("[解码往返] 输入 %d 包, 输出 %d 帧 BGRA %dx%d, 首帧中心 BGR=(%d,%d,%d)%n",
-                packets.size() + 1, outputs.size(), WIDTH, HEIGHT, actualB, actualG, actualR);
-        outputs.forEach(NativeFrame::close);
-    }
-
-    @Test
-    void 整段拼接流_一次喂入_parser按NAL切分解码() {
-        List<byte[]> packets = encodeH264(FRAMES);
-        decoder.init(config());
-        decoder.start();
-        // 模拟网络大块到达：5 个 packet 拼成一个连续 Annex-B 流一次性喂入
-        int total = packets.stream().mapToInt(p -> p.length).sum();
-        ByteBuffer merged = ByteBuffer.allocateDirect(total);
-        packets.forEach(p -> merged.put(p));
-        merged.flip();
-        List<NativeFrame> outputs = new ArrayList<>();
-        NativeFrame encoded = new NativeFrame(merged, WIDTH, HEIGHT, "H264", System.nanoTime());
-        decoder.decode(encoded, outputs::add);
-        encoded.close();
-        decoder.stop();
-
-        assertEquals(FRAMES - 1, outputs.size(), "拼接流应被 parser 切分解码输出前 4 帧（尾帧滞留）");
-        outputs.forEach(f -> {
-            assertEquals("BGRA", f.pixelFormat());
-            assertEquals(WIDTH, f.width());
-            assertEquals(HEIGHT, f.height());
-        });
+                packets.size(), outputs.size(), WIDTH, HEIGHT, actualB, actualG, actualR);
         outputs.forEach(NativeFrame::close);
     }
 

@@ -76,9 +76,10 @@ public final class ServerApp {
         try (SignalingServer signaling = new SignalingServer(signalingPort);
              StunServer stun = new StunServer(stunPort);
              RelayServer relay = new RelayServer(relayPort)) {
-            signaling.start();
             stun.start();
             relay.start();
+            signaling.setStunRelayPorts(stun.getPort(), relay.getPort());
+            signaling.start();
 
             System.out.println("GuDesk 服务器已启动：");
             System.out.printf("  信令服务器: TCP %s:%d%n", "0.0.0.0", signaling.getPort());
@@ -131,9 +132,10 @@ public final class ServerApp {
         try (SignalingServer signaling = new SignalingServer(0);
              StunServer stun = new StunServer(0);
              RelayServer relay = new RelayServer(0)) {
-            signaling.start();
             stun.start();
             relay.start();
+            signaling.setStunRelayPorts(stun.getPort(), relay.getPort());
+            signaling.start();
             System.out.printf("[启动] 信令 TCP %d / STUN UDP %d / 中继 TCP %d%n",
                     signaling.getPort(), stun.getPort(), relay.getPort());
 

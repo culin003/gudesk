@@ -1,0 +1,57 @@
+name: package
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows 压缩包 (zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 打包 Windows 自包含绿色版 zip
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
+
+      - name: 上传 zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: gudesk-win64
+          path: dist/gudesk-0.1.0-win64.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux 压缩包 (tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 安装 portal helper 编译依赖
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
+
+      - name: 打包 Linux 自包含 tar.gz
+        run: bash scripts/package-linux-tar.sh
+
+      - name: 上传 tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: gudesk-linux-x64
+          path: dist/gudesk-0.1.0-linux-x64.tar.gz
+          if-no-files-found: error

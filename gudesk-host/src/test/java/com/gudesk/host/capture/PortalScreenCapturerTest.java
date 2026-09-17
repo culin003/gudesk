@@ -147,40 +147,41 @@ class PortalScreenCapturerTest {
     }
 
     // ------------------------------------------------------------------
-    // Wayland SPI 偏好
+    // 平台 SPI 选择
     // ------------------------------------------------------------------
 
     @Test
-    void Wayland偏好_Wayland会话且无用户配置时设置() {
+    void 平台选择_Wayland会话选Portal() {
         Map<String, String> env = new HashMap<>();
         env.put("XDG_SESSION_TYPE", "wayland");
 
-        PortalScreenCapturer.preferOnWaylandSession(env);
+        PortalScreenCapturer.selectPlatformDefault(env);
 
         assertEquals(PortalScreenCapturer.class.getName(),
                 System.getProperty("gudesk.adapter.capturer"));
     }
 
     @Test
-    void Wayland偏好_用户以环境变量指定时不干预() {
+    void 平台选择_用户以环境变量指定时不干预() {
         Map<String, String> env = new HashMap<>();
         env.put("XDG_SESSION_TYPE", "wayland");
         env.put("GUDESK_ADAPTER_CAPTURER", "com.example.Custom");
 
-        PortalScreenCapturer.preferOnWaylandSession(env);
+        PortalScreenCapturer.selectPlatformDefault(env);
 
         assertNull(System.getProperty("gudesk.adapter.capturer"));
     }
 
     @Test
-    void Wayland偏好_X11会话不干预() {
+    void 平台选择_X11会话显式选Robot() {
         Map<String, String> env = new HashMap<>();
         env.put("XDG_SESSION_TYPE", "x11");
         env.put("DISPLAY", ":0");
 
-        PortalScreenCapturer.preferOnWaylandSession(env);
+        PortalScreenCapturer.selectPlatformDefault(env);
 
-        assertNull(System.getProperty("gudesk.adapter.capturer"));
+        assertEquals(RobotScreenCapturer.class.getName(),
+                System.getProperty("gudesk.adapter.capturer"));
     }
 
     // ------------------------------------------------------------------

@@ -5,10 +5,12 @@ import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.FrameRenderer;
 import com.gudesk.common.spi.SpiLoader;
 import com.gudesk.common.spi.VideoDecoder;
+import com.gudesk.viewer.decode.DecoderSelector;
 import com.gudesk.viewer.decode.JavaCvVideoDecoder;
 import com.gudesk.viewer.input.InputForwarder;
 import com.gudesk.viewer.render.JavaFxFrameRenderer;
 import com.gudesk.viewer.ui.ConnectionState;
+import com.gudesk.viewer.ui.ConnectPolicy;
 import com.gudesk.viewer.ui.UiController;
 import javafx.scene.canvas.Canvas;
 import org.slf4j.Logger;
@@ -73,12 +75,17 @@ public final class SessionUiConnector implements UiController.ConnectHandler, In
         this.orchestrator = new ViewerConnectionOrchestrator(signalingServer, preferRelay);
     }
 
+    /** 运行时更新信令服务器（影响后续 ID 连接） */
+    public void setServer(InetSocketAddress signalingServer) {
+        orchestrator.setServer(signalingServer);
+    }
+
     // ------------------------------------------------------------------
     // ConnectHandler
     // ------------------------------------------------------------------
 
     @Override
-    public void connect(String target, String password) {
+    public void connect(String target, String password, ConnectPolicy policy) {
         String[] parsed = parseTarget(target);
         if (parsed == null) {
             controller.publishMessage("连接目标格式非法: " + target + "（支持 ID 或 ip:port）");
@@ -93,6 +100,7 @@ public final class SessionUiConnector implements UiController.ConnectHandler, In
 
         VideoDecoder decoder;
         try {
+            DecoderSelector.selectPlatformDefault();
             decoder = SpiLoader.load(VideoDecoder.class, "decoder",
                     JavaCvVideoDecoder::defaultDecoder);
             decoder.init(AdapterConfig.builder()
@@ -183,7 +191,7 @@ public final class SessionUiConnector implements UiController.ConnectHandler, In
                         controller.updateState(ConnectionState.DISCONNECTED);
                         controller.publishMessage("连接失败: " + reason);
                     }
-                });
+                }, policy);
     }
 
     @Override

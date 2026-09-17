@@ -50,6 +50,11 @@ public class JavaFxFrameRenderer implements FrameRenderer {
     private int videoHeight;
     private int surfaceWidth;
     private int surfaceHeight;
+    /** 上次黑边填充时的画布/视频尺寸（尺寸不变时跳过整幅黑边填充） */
+    private int lastFillCanvasW = -1;
+    private int lastFillCanvasH = -1;
+    private int lastFillVideoW = -1;
+    private int lastFillVideoH = -1;
     private volatile boolean started;
     private long renderedCount;
     private long droppedCount;
@@ -62,6 +67,11 @@ public class JavaFxFrameRenderer implements FrameRenderer {
     /** 构造器注入渲染目标画布 */
     public JavaFxFrameRenderer(Canvas canvas) {
         this.canvas = canvas;
+        if (canvas != null) {
+            // 画布尺寸变化（窗口缩放）时用最近一帧重绘，避免缩小/放大后画面不跟随
+            canvas.widthProperty().addListener((obs, o, n) -> redraw());
+            canvas.heightProperty().addListener((obs, o, n) -> redraw());
+        }
     }
 
     /**
@@ -178,6 +188,14 @@ public class JavaFxFrameRenderer implements FrameRenderer {
         renderedCount++;
     }
 
+    /** 画布尺寸变化时用缓存的最近一帧重绘（保持窗口缩放时画面实时跟随） */
+    private void redraw() {
+        if (image == null || canvas == null || !isFxApplicationThread()) {
+            return;
+        }
+        drawLetterboxed(canvas.getGraphicsContext2D());
+    }
+
     /** letterbox 居中绘制：黑边填充整个画布后，将视频按比例绘制到中间区域 */
     private void drawLetterboxed(GraphicsContext gc) {
         double canvasWidth = canvas.getWidth() > 0 ? canvas.getWidth() : surfaceWidth;
@@ -186,8 +204,18 @@ public class JavaFxFrameRenderer implements FrameRenderer {
         if (box.isInvalid()) {
             return;
         }
-        gc.setFill(Color.BLACK);
-        gc.fillRect(0, 0, canvasWidth, canvasHeight);
+        // 黑边只在画布或视频尺寸变化时重填一次（drawImage 会覆盖视频区域，黑边保持不变）
+        int cw = (int) canvasWidth;
+        int ch = (int) canvasHeight;
+        if (cw != lastFillCanvasW || ch != lastFillCanvasH
+                || videoWidth != lastFillVideoW || videoHeight != lastFillVideoH) {
+            gc.setFill(Color.BLACK);
+            gc.fillRect(0, 0, canvasWidth, canvasHeight);
+            lastFillCanvasW = cw;
+            lastFillCanvasH = ch;
+            lastFillVideoW = videoWidth;
+            lastFillVideoH = videoHeight;
+        }
         gc.drawImage(image, box.x(), box.y(), box.width(), box.height());
     }
 

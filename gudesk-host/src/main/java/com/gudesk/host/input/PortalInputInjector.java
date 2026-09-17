@@ -54,18 +54,17 @@ public class PortalInputInjector implements InputInjector {
     private final AtomicLong droppedEvents = new AtomicLong();
 
     // ------------------------------------------------------------------
-    // 平台选择（Wayland 会话优先本实现，用户显式配置时不干预）
+    // 平台选择（按运行环境显式决定默认实现，用户显式配置时不干预）
     // ------------------------------------------------------------------
 
     /**
-     * 在 Wayland 会话下将输入注入器 SPI 偏好设置为 Portal 实现（若用户未以系统属性
-     * gudesk.adapter.injector 或环境变量 GUDESK_ADAPTER_INJECTOR 显式指定）。
-     * 应在 SpiLoader.load(InputInjector.class, "injector", ...) 之前调用。
+     * 按运行环境显式选择输入注入默认实现：Wayland 会话选本 Portal 实现，X11 选
+     * {@link RobotInputInjector}。用户以系统属性 gudesk.adapter.injector 或环境变量
+     * GUDESK_ADAPTER_INJECTOR 显式指定时不干预。
+     * 应在 SpiLoader.load(InputInjector.class, "injector", ...) 之前调用；
+     * 显式按环境决定，不依赖 ServiceLoader 注册顺序。
      */
-    public static void preferOnWaylandSession(Map<String, String> env) {
-        if (!RobotScreenCapturer.isWaylandSession(env)) {
-            return;
-        }
+    public static void selectPlatformDefault(Map<String, String> env) {
         if (System.getProperty("gudesk.adapter.injector") != null) {
             return;
         }
@@ -73,7 +72,10 @@ public class PortalInputInjector implements InputInjector {
         if (envOverride != null && !envOverride.isBlank()) {
             return;
         }
-        System.setProperty("gudesk.adapter.injector", PortalInputInjector.class.getName());
+        String impl = RobotScreenCapturer.isWaylandSession(env)
+                ? PortalInputInjector.class.getName()
+                : RobotInputInjector.class.getName();
+        System.setProperty("gudesk.adapter.injector", impl);
     }
 
     // ------------------------------------------------------------------

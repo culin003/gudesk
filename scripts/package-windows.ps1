@@ -1,25 +1,23 @@
 # =============================================================================
-# GuDesk Windows 打包脚本 —— 必须在 Windows x64 上运行（本机 Linux 无法产出 msi）
+# GuDesk Windows 打包脚本 —— 必须在 Windows x64 上运行（产出自包含绿色版 zip，非 msi）
 #
 # 前提条件：
 #   1. JDK 21（含 jpackage.exe/jlink.exe/jar.exe/javac.exe）：设置 JAVA_HOME 指向它
 #      （例如 Zulu 21：https://www.azul.com/downloads/?version=21&os=windows&package=jdk）
 #   2. Maven 3.9+ 在 PATH 中
-#   3. WiX Toolset 3.x（jpackage --type msi 依赖 candle.exe/light.exe 在 PATH）：
-#      下载 https://github.com/wixtoolset/wix3/releases（选 wix314.exe 或 wix311.exe）
-#      注意：WiX 4/5 与 JDK 21 jpackage 不兼容，必须 3.x
-#   4. 项目 Maven 依赖已声明 windows 平台 classifier（ffmpeg windows-x86_64-gpl、
+#   3. 项目 Maven 依赖已声明 windows 平台 classifier（ffmpeg windows-x86_64-gpl、
 #      javacpp windows-x86_64、javafx-*-win），首次构建会自动下载
+#   （仅打绿色版 zip，无需 WiX Toolset；如需 msi 再另行安装 WiX 3.x）
 #
 # 用法（项目根目录）：
 #   powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
 #
 # 流程：Maven 构建 → 依赖平台裁剪（剔除 Linux 平台 jar）→ 编译测试适配器
-#       → jlink 裁剪运行时 → jpackage msi（--win-dir-chooser --win-menu --win-shortcut）
+#       → jlink 裁剪运行时 → jpackage app-image → zip 打包绿色版
 #
 # 产物：
-#   dist\gudesk-0.1.0.msi     Windows 安装包
-#   dist\gudesk\              app-image（dist\gudesk\gudesk.exe 可先本机验证）
+#   dist\gudesk-0.1.0-win64.zip   自包含绿色版（解压后双击 gudesk\gudesk.exe）
+#   dist\gudesk\                  app-image（dist\gudesk\gudesk.exe 可先本机验证）
 #
 # 说明：
 #   - 应用入口统一为 GuDeskLauncher：gudesk.exe（无参数=主控端 UI+后台被控服务；
@@ -57,15 +55,15 @@ New-Item -ItemType Directory -Path dist\jpackage-input | Out-Null
 Copy-Item "gudesk-launcher\target\$MainJar" dist\jpackage-input\
 $copied = 1; $skipped = 0
 Get-ChildItem gudesk-launcher\target\lib\*.jar | ForEach-Object {
-    if ($_.Name -match "linux") {
-        Write-Host "    剔除(Linux 平台): $($_.Name)"
+    if ($_.Name -match "linux|dbus-java|junixsocket") {
+        Write-Host "    剔除(平台不适用/Linux 专属): $($_.Name)"
         $skipped++
     } else {
         Copy-Item $_ dist\jpackage-input\
         $copied++
     }
 }
-Write-Host "    保留 $copied 个 jar（含主 jar），剔除 $skipped 个 Linux 平台 jar"
+Write-Host "    保留 $copied 个 jar（含主 jar），剔除 $skipped 个平台不适用/Linux 专属 jar"
 
 Write-Host "==> [3/6] 编译联调测试适配器（TestPatternCapturer）"
 New-Item -ItemType Directory -Path dist\test-adapter-classes -Force | Out-Null
@@ -87,30 +85,23 @@ Write-Host "==> [5/6] jpackage app-image（dist\$AppName）"
     --main-jar $MainJar --main-class $MainClass `
     --runtime-image dist\runtime `
     --dest dist --app-version $Version `
+    --icon packaging\gudesk.ico `
     --java-options=-XX:+UseZGC `
     --java-options=--enable-native-access=ALL-UNNAMED `
     --java-options=-Xmx1g
 if ($LASTEXITCODE -ne 0) { Write-Error "jpackage app-image 失败" }
-Copy-Item packaging\gudesk.png "dist\$AppName\lib\gudesk.png" -ErrorAction SilentlyContinue
 
-Write-Host "==> [6/6] jpackage msi（需 WiX Toolset 3.x 在 PATH）"
-& $Jpackage --name $AppName --type msi `
-    --input dist\jpackage-input `
-    --main-jar $MainJar --main-class $MainClass `
-    --runtime-image dist\runtime `
-    --dest dist --app-version $Version `
-    --win-dir-chooser --win-menu --win-menu-group GuDesk --win-shortcut `
-    --java-options "-XX:+UseZGC" `
-    --java-options "--enable-native-access=ALL-UNNAMED" `
-    --java-options "-Xmx1g"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "jpackage msi 失败（确认 WiX Toolset 3.x 已安装且 candle/light 在 PATH）"
-}
+Write-Host "==> [6/6] zip 打包自包含绿色版（dist\${AppName}-${Version}-win64.zip）"
+$ZipPath = "dist\${AppName}-${Version}-win64.zip"
+if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
+Compress-Archive -Path "dist\$AppName" -DestinationPath $ZipPath
+if (-not (Test-Path $ZipPath)) { Write-Error "zip 打包失败" }
 
 Write-Host ""
 Write-Host "==================== 打包结果 ===================="
-Get-ChildItem dist\*.msi | ForEach-Object {
-    Write-Host ("msi      : {0}  ({1:N1} MB)" -f $_.FullName, ($_.Length / 1MB))
+Get-Item $ZipPath | ForEach-Object {
+    Write-Host ("zip      : {0}  ({1:N1} MB)" -f $_.FullName, ($_.Length / 1MB))
 }
 Write-Host ("app-image: dist\{0}\{0}.exe（可直接运行验证）" -f $AppName)
+Write-Host "绿色版使用：解压 zip，双击 gudesk\gudesk.exe（免安装、免 JRE）"
 Write-Host "================================================="

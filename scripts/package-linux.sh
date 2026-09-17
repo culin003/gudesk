@@ -45,8 +45,9 @@ MAIN_CLASS="com.gudesk.launcher.GuDeskLauncher"
 #   java.desktop   Swing/AWT（host 授权弹窗、JavaFX 依赖）
 #   java.logging/java.management/java.naming/java.xml  Netty resolver / log4j2
 #   jdk.crypto.ec  ECDH 密钥交换（CryptoUtil/SessionHandshake）
+#   jdk.security.auth  dbus-java SASL external 认证需要 com.sun.security.auth.module.UnixSystem
 #   jdk.unsupported  Netty/JavaCPP 的 sun.misc.Unsafe、sun.nio.ch
-RUNTIME_MODULES="java.base,java.desktop,java.logging,java.management,java.naming,java.xml,jdk.crypto.ec,jdk.unsupported"
+RUNTIME_MODULES="java.base,java.desktop,java.logging,java.management,java.naming,java.xml,jdk.crypto.ec,jdk.security.auth,jdk.unsupported"
 
 echo "==> [1/6] Maven 构建（跳过测试；全量回归请另行执行 mvn clean package）"
 mvn -q clean package -DskipTests
@@ -92,6 +93,10 @@ rm -rf dist/runtime
 "$JLINK" --add-modules "$RUNTIME_MODULES" --output dist/runtime \
     --strip-debug --no-header-files --no-man-pages --compress zip-6
 echo "    运行时体积: $(du -sh dist/runtime | cut -f1)"
+# 内置中文字体（Noto Sans CJK SC）：无 CJK 字体系统上避免 Swing/JavaFX 中文渲染为方框
+mkdir -p dist/runtime/lib/fonts
+install -m644 packaging/fonts/NotoSansCJK-Regular.ttc dist/runtime/lib/fonts/
+echo "    内置中文字体: NotoSansCJK-Regular.ttc"
 
 echo "==> [5/6] jpackage app-image（dist/$APP_NAME）"
 "$JPACKAGE" --name "$APP_NAME" --type app-image \

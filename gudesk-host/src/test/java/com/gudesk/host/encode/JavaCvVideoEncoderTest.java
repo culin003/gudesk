@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -133,19 +134,45 @@ class JavaCvVideoEncoderTest {
     }
 
     @Test
-    void 输入格式或尺寸不匹配抛出异常() {
+    void 输入格式不匹配抛出异常_尺寸变化自适应() {
         encoder.init(config(WIDTH, HEIGHT));
         encoder.start();
-        // 尺寸不匹配
-        NativeFrame wrongSize = new NativeFrame(
-                ByteBuffer.allocateDirect(64 * 64 * 4), 64, 64, "BGRA", 0L);
-        assertThrows(AdapterException.class, () -> encoder.encode(wrongSize, f -> { }));
-        wrongSize.close();
-        // 格式不匹配
+        // 格式不匹配 → 抛异常
         NativeFrame wrongFormat = new NativeFrame(
                 ByteBuffer.allocateDirect(WIDTH * HEIGHT * 4), WIDTH, HEIGHT, "I420", 0L);
         assertThrows(AdapterException.class, () -> encoder.encode(wrongFormat, f -> { }));
         wrongFormat.close();
+        // 尺寸变化 → 自适应重建，正常编码（不再抛异常）
+        List<NativeFrame> outputs = new ArrayList<>();
+        NativeFrame smaller = new NativeFrame(
+                ByteBuffer.allocateDirect(64 * 64 * 4), 64, 64, "BGRA", 0L);
+        assertDoesNotThrow(() -> encoder.encode(smaller, outputs::add));
+        smaller.close();
+        assertFalse(outputs.isEmpty(), "尺寸自适应后应正常输出编码帧");
+        outputs.forEach(NativeFrame::close);
+    }
+
+    @Test
+    void 超出最大编码宽度时等比缩放输出() {
+        AdapterConfig scaled = AdapterConfig.builder()
+                .width(WIDTH).height(HEIGHT).fps(FPS)
+                .pixelFormat("BGRA")
+                .putExtra("bitrate", "1000000")
+                .putExtra("max-encode-width", "160")
+                .build();
+        encoder.init(scaled);
+        encoder.start();
+        List<NativeFrame> outputs = new ArrayList<>();
+        NativeFrame input = syntheticFrame(0); // 320x240
+        encoder.encode(input, outputs::add);
+        input.close();
+        encoder.stop();
+        assertFalse(outputs.isEmpty(), "应输出编码帧");
+        // 320x240 等比缩放到最大宽 160 → 160x120
+        NativeFrame first = outputs.get(0);
+        assertEquals(160, first.width());
+        assertEquals(120, first.height());
+        outputs.forEach(NativeFrame::close);
     }
 
     @Test

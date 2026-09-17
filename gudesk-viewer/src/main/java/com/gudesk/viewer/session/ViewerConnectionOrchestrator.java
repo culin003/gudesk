@@ -7,10 +7,12 @@ import com.gudesk.common.net.UdpHolePuncher;
 import com.gudesk.common.proto.GuDeskProto.ConnectAccept;
 import com.gudesk.common.proto.GuDeskProto.ConnectRequest;
 import com.gudesk.common.proto.GuDeskProto.PunchCandidate;
+import com.gudesk.common.proto.GuDeskProto.RegisterResponse;
 import com.gudesk.common.session.SessionEventListener;
 import com.gudesk.common.session.SessionTransport;
 import com.gudesk.common.session.TcpSessionEndpoint;
 import com.gudesk.common.session.UdpSessionEndpoint;
+import com.gudesk.viewer.ui.ConnectPolicy;
 import com.google.protobuf.ByteString;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
@@ -113,10 +115,10 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
         void onFailed(String reason);
     }
 
-    private final InetSocketAddress signalingAddress;
-    private final InetSocketAddress stunAddress;
-    private final InetSocketAddress relayAddress;
-    private final boolean preferRelay;
+    private volatile InetSocketAddress signalingAddress;
+    private volatile InetSocketAddress stunAddress;
+    private volatile InetSocketAddress relayAddress;
+    private final ConnectPolicy defaultPolicy;
     /** TCP 连接与中继共用 IO 线程组（守护线程） */
     private final EventLoopGroup ioGroup = new NioEventLoopGroup(1, r -> {
         Thread t = new Thread(r, "gudesk-viewer-orch-io");
@@ -153,14 +155,24 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
     }
 
     /**
-     * @param signalingServer 信令服务器地址（STUN/中继按同主机默认端口推导）
+     * @param signalingServer 信令服务器地址（null=未配置，仅支持 ip:port 直连）
      * @param preferRelay     true=跳过打洞与 TCP 直连，直接走中继（测试中继回落）
      */
     public ViewerConnectionOrchestrator(InetSocketAddress signalingServer, boolean preferRelay) {
+        this(signalingServer, preferRelay ? ConnectPolicy.RELAY_ONLY : ConnectPolicy.AUTO);
+    }
+
+    /**
+     * @param signalingServer 信令服务器地址（null=未配置，仅支持 ip:port 直连）
+     * @param defaultPolicy   默认连接策略（ID 连接未显式指定策略时采用）
+     */
+    public ViewerConnectionOrchestrator(InetSocketAddress signalingServer, ConnectPolicy defaultPolicy) {
         this(signalingServer,
-                new InetSocketAddress(signalingServer.getHostString(), DEFAULT_STUN_PORT),
-                new InetSocketAddress(signalingServer.getHostString(), DEFAULT_RELAY_PORT),
-                preferRelay);
+                signalingServer == null ? null
+                        : new InetSocketAddress(signalingServer.getHostString(), DEFAULT_STUN_PORT),
+                signalingServer == null ? null
+                        : new InetSocketAddress(signalingServer.getHostString(), DEFAULT_RELAY_PORT),
+                defaultPolicy);
     }
 
     /**
@@ -168,10 +180,25 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
      */
     ViewerConnectionOrchestrator(InetSocketAddress signalingServer, InetSocketAddress stunServer,
                                  InetSocketAddress relayServer, boolean preferRelay) {
+        this(signalingServer, stunServer, relayServer,
+                preferRelay ? ConnectPolicy.RELAY_ONLY : ConnectPolicy.AUTO);
+    }
+
+    ViewerConnectionOrchestrator(InetSocketAddress signalingServer, InetSocketAddress stunServer,
+                                 InetSocketAddress relayServer, ConnectPolicy defaultPolicy) {
         this.signalingAddress = signalingServer;
         this.stunAddress = stunServer;
         this.relayAddress = relayServer;
-        this.preferRelay = preferRelay;
+        this.defaultPolicy = defaultPolicy;
+    }
+
+    /** 运行时更新信令服务器（null=清空，仅 ip:port 直连；STUN/中继按同主机默认端口重新推导） */
+    public void setServer(InetSocketAddress signalingServer) {
+        this.signalingAddress = signalingServer;
+        this.stunAddress = signalingServer == null ? null
+                : new InetSocketAddress(signalingServer.getHostString(), DEFAULT_STUN_PORT);
+        this.relayAddress = signalingServer == null ? null
+                : new InetSocketAddress(signalingServer.getHostString(), DEFAULT_RELAY_PORT);
     }
 
     /**
@@ -185,10 +212,19 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
     public void connect(String target, SessionEventListener sessionListener,
                         Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler,
                         Listener listener) {
+        connect(target, sessionListener, messageHandler, listener, defaultPolicy);
+    }
+
+    /**
+     * 异步连接（显式指定连接策略）：结果经 listener 回调（编排虚拟线程）。
+     */
+    public void connect(String target, SessionEventListener sessionListener,
+                        Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler,
+                        Listener listener, ConnectPolicy policy) {
         Attempt attempt = new Attempt(listener);
         currentAttempt = attempt;
         Thread.ofVirtual().name("gudesk-viewer-orchestrate").start(() ->
-                attempt.run(target, sessionListener, messageHandler));
+                attempt.run(target, sessionListener, messageHandler, policy));
     }
 
     /** 取消当前编排（关闭在途资源；结果回调静默抑制；幂等） */
@@ -222,7 +258,8 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
         }
 
         void run(String target, SessionEventListener sessionListener,
-                 Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler) {
+                 Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler,
+                 ConnectPolicy policy) {
             String[] parsed = SessionUiConnector.parseTarget(target);
             if (parsed == null) {
                 fail("连接目标格式非法: " + target + "（支持 ID 或 ip:port）");
@@ -230,7 +267,7 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
             }
             try {
                 if ("id".equals(parsed[0])) {
-                    connectById(parsed[1], sessionListener, messageHandler);
+                    connectById(parsed[1], sessionListener, messageHandler, policy);
                 } else {
                     connectTcpDirect(parsed[0], Integer.parseInt(parsed[1]),
                             sessionListener, messageHandler);
@@ -300,15 +337,43 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
         // ------------------------------------------------------------------
 
         private void connectById(String targetId, SessionEventListener sessionListener,
-                                 Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler)
+                                 Consumer<com.gudesk.common.proto.GuDeskProto.SessionMessage> messageHandler,
+                                 ConnectPolicy policy)
                 throws Exception {
-            LOG.info("ID 连接: {}（信令 {}，STUN {}，中继 {}{}）",
-                    targetId, signalingAddress, stunAddress, relayAddress,
-                    preferRelay ? "，--prefer-relay 模式" : "");
+            if (signalingAddress == null) {
+                fail("未配置服务器地址，无法按 ID 连接（仅支持 ip:port 直连）");
+                return;
+            }
 
-            // 1. 预绑定打洞 socket + STUN 公网映射 + 组装候选
+            // 1. 连接信令服务器并注册，从注册响应获知服务器 STUN/中继端口（自定义端口场景）
+            CompletableFuture<ConnectAccept> acceptFuture = new CompletableFuture<>();
+            SignalingClient client = new SignalingClient(signalingAddress, new SignalingClient.Listener() {
+                @Override
+                public void onConnectAccept(ConnectAccept accept) {
+                    acceptFuture.complete(accept);
+                }
+
+                @Override
+                public void onConnectReject(com.gudesk.common.proto.GuDeskProto.ConnectReject reject) {
+                    acceptFuture.completeExceptionally(new IOException(
+                            "被控端拒绝: " + (reject.getReason().isEmpty() ? "未知原因" : reject.getReason())));
+                }
+
+                @Override
+                public void onDisconnected(String reason) {
+                    acceptFuture.completeExceptionally(new IOException("信令断开: " + reason));
+                }
+            });
+            signaling = client;
+            client.register(new byte[0]); // 临时 ID
+            RegisterResponse reg = client.registerResponse();
+            applyAnnouncedPorts(reg);
+            LOG.info("ID 连接: {}（信令 {}，STUN {}，中继 {}，策略: {}）",
+                    targetId, signalingAddress, stunAddress, relayAddress, policy.label());
+
+            // 2. 预绑定打洞 socket + STUN 公网映射 + 组装候选（使用注册响应获知的 STUN 端口）
             List<PunchCandidate> candidates = new ArrayList<>();
-            if (!preferRelay) {
+            if (policy != ConnectPolicy.RELAY_ONLY) {
                 DatagramSocket socket = new DatagramSocket();
                 punchSocket = socket;
                 InetSocketAddress mapped = TransportCandidates.stunLookup(socket, stunAddress);
@@ -325,10 +390,22 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
                         candidates.size(), mapped == null ? "不可达" : mapped);
             }
 
-            // 2. 信令注册 + ConnectRequest → ConnectAccept/Reject
-            ConnectAccept accept = exchangeSignaling(targetId, candidates);
+            // 3. ConnectRequest → ConnectAccept/Reject
+            ConnectAccept accept;
+            try {
+                client.sendConnectRequest(ConnectRequest.newBuilder()
+                        .setTargetId(targetId)
+                        .setViewerPublicKey(ByteString.EMPTY)
+                        .addAllCandidates(candidates)
+                        .build());
+                accept = acceptFuture.get(SIGNALING_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                checkCancelled();
+            } finally {
+                signaling = null;
+                client.close(); // 交换完成（或失败），信令连接不再需要
+            }
 
-            // 3. 解析被控端候选
+            // 4. 解析被控端候选
             List<InetSocketAddress> hostTcp = TransportCandidates.decodeAllCandidates(
                     accept.getCandidatesList(), TransportCandidates.SCHEME_TCP);
             List<InetSocketAddress> hostUdp = TransportCandidates.decodeAllCandidates(
@@ -338,13 +415,13 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
                     hostTcp.size(), hostUdp.size(),
                     relayToken.isEmpty() ? "无" : relayToken.substring(0, 8));
 
-            if (preferRelay) {
-                // 测试模式：跳过打洞与 TCP 直连，直接中继
+            if (policy == ConnectPolicy.RELAY_ONLY) {
+                // 仅中继：跳过打洞与 TCP 直连，直接中继
                 deliverRelay(relayToken, sessionListener, messageHandler);
                 return;
             }
 
-            // 4. 并发尝试：UDP 打洞 与 TCP 直连（UDP 优先窗口）；均失败回落中继
+            // 5. 并发尝试：UDP 打洞 与 TCP 直连（UDP 优先窗口）；均失败回落中继
             CompletableFuture<UdpHolePuncher.PunchOutcome> punch =
                     (!hostUdp.isEmpty() && punchSocket != null)
                             ? UdpHolePuncher.punch(punchSocket, hostUdp, PUNCH_TIMEOUT_MS)
@@ -359,45 +436,21 @@ public final class ViewerConnectionOrchestrator implements AutoCloseable {
             }
             if (!delivered) {
                 checkCancelled();
+                if (policy == ConnectPolicy.DIRECT_ONLY) {
+                    throw new IOException("直连失败（UDP 打洞与 TCP 直连均不可达），已按「仅直连」策略终止");
+                }
                 deliverRelay(relayToken, sessionListener, messageHandler);
             }
         }
 
-        /** 信令交换：注册 → ConnectRequest → 等 ConnectAccept（异常=拒绝/超时/断开） */
-        private ConnectAccept exchangeSignaling(String targetId, List<PunchCandidate> candidates)
-                throws Exception {
-            CompletableFuture<ConnectAccept> result = new CompletableFuture<>();
-            SignalingClient client = new SignalingClient(signalingAddress, new SignalingClient.Listener() {
-                @Override
-                public void onConnectAccept(ConnectAccept accept) {
-                    result.complete(accept);
-                }
-
-                @Override
-                public void onConnectReject(com.gudesk.common.proto.GuDeskProto.ConnectReject reject) {
-                    result.completeExceptionally(new IOException(
-                            "被控端拒绝: " + (reject.getReason().isEmpty() ? "未知原因" : reject.getReason())));
-                }
-
-                @Override
-                public void onDisconnected(String reason) {
-                    result.completeExceptionally(new IOException("信令断开: " + reason));
-                }
-            });
-            signaling = client;
-            try {
-                client.register(new byte[0]); // 临时 ID（公钥占位：会话密钥走临时 ECDH）
-                client.sendConnectRequest(ConnectRequest.newBuilder()
-                        .setTargetId(targetId)
-                        .setViewerPublicKey(ByteString.EMPTY)
-                        .addAllCandidates(candidates)
-                        .build());
-                ConnectAccept accept = result.get(SIGNALING_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-                checkCancelled();
-                return accept;
-            } finally {
-                signaling = null;
-                client.close(); // 交换完成（或失败），信令连接不再需要
+        /** 服务器通告了 STUN/中继端口时覆盖默认推导（0=未通告则保持默认端口） */
+        private void applyAnnouncedPorts(RegisterResponse reg) {
+            String host = signalingAddress.getHostString();
+            if (reg.getStunPort() > 0) {
+                stunAddress = new InetSocketAddress(host, reg.getStunPort());
+            }
+            if (reg.getRelayPort() > 0) {
+                relayAddress = new InetSocketAddress(host, reg.getRelayPort());
             }
         }
 

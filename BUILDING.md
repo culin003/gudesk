@@ -62,7 +62,8 @@ java -jar gudesk-server/target/gudesk-server-0.1.0-SNAPSHOT.jar
 ### 概览
 
 - 合并应用 `GuDesk`：主入口 `com.gudesk.launcher.GuDeskLauncher`（`gudesk-launcher` 模块），
-  无参数 = 主控端 UI + 后台被控服务；`--host-only` / `--viewer-only` / `--server-only`
+  无参数 = 单窗口双区应用（首页左「被控」显示本机 ID 与「被控中」状态、右「主控」连接入口，
+  连接后切视频会话视图）；`--host-only` / `--viewer-only` / `--server-only`
   分模式（参数透传三个 App）；`--help` 查看完整用法。
 - 体积控制：
   - **平台裁剪**：项目依赖同时声明 linux+windows 双平台原生 jar（Maven 显式 classifier），
@@ -74,6 +75,10 @@ java -jar gudesk-server/target/gudesk-server-0.1.0-SNAPSHOT.jar
 - 打包资产在 `packaging/`：`gudesk.desktop`（菜单项）、`gudesk-autostart.desktop`
   （XDG autostart 开机自启）、`gudesk.png`（图标）、`test-adapter/`（联调测试彩条捕获器
   TestPatternCapturer，随包携带、仅经 `GUDESK_ADAPTER_CAPTURER=<类名>` 环境变量指定时生效）。
+- 跨发行版自包含包：`scripts/package-linux-tar.sh` 产出 `dist/gudesk-<version>-linux-x64.tar.gz`
+  （app-image + 内嵌 portal helper + `install.sh`），解压后 `./install.sh` 免 root 安装到
+  `~/.local/opt/gudesk` 并配置桌面菜单/开机自启；唯一运行时要求是 glibc + libpipewire-0.3
+  （仅 Wayland 抓屏需要），覆盖各主流桌面发行版。
 - 开机自启（用户态）：deb 安装 `/etc/xdg/autostart/gudesk.desktop`（登录后自启被控服务，
   deb 内标记 conffile）；应用内 `gudesk --disable-autostart` / `--enable-autostart` 写
   `~/.config/autostart/gudesk.desktop`（XDG 规范：用户级同名文件优先于系统级，`Hidden=true` 禁用）。
@@ -140,7 +145,7 @@ gudesk --viewer-only --connect <被控ID> --password 123456 --auto 5            
 powershell -ExecutionPolicy Bypass -File scripts\package-windows.ps1
 ```
 
-流程与 Linux 一致（剔除 `*linux*` jar 保留 win 平台），产出 `dist\gudesk-0.1.0.msi`
+流程与 Linux 一致：剔除 `*linux*` jar 保留 win 平台，并额外剔除 `dbus-java`/`junixsocket`（Wayland 专属，Windows 无 xdg-desktop-portal）；`gudesk-portal-helper` 仅 Linux 脚本编译携带，Windows 天然不含。产出 `dist\gudesk-0.1.0.msi`
 （`--win-dir-chooser --win-menu --win-shortcut`）与 app-image（`dist\gudesk\gudesk.exe`
 可先本机验证）。Windows 端开机自启（注册表 Run 键/启动文件夹）未内置，后续版本提供。
 

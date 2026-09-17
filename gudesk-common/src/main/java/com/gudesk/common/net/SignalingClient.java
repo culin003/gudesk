@@ -73,6 +73,8 @@ public final class SignalingClient implements AutoCloseable {
     private final Object writeLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final CompletableFuture<RegisterResponse> registerFuture = new CompletableFuture<>();
+    /** 最近一次注册响应（register() 成功返回后可见，供调用方读取通告的 STUN/中继端口） */
+    private volatile RegisterResponse lastRegisterResponse;
 
     public SignalingClient(InetSocketAddress serverAddress, Listener listener) throws IOException {
         this.listener = Objects.requireNonNull(listener, "listener");
@@ -118,6 +120,11 @@ public final class SignalingClient implements AutoCloseable {
             throw new IOException("注册被拒绝: " + response.getMessage());
         }
         return response.getAssignedId();
+    }
+
+    /** 最近一次注册响应（未注册过则为 null），含服务器通告的 STUN/中继端口。 */
+    public RegisterResponse registerResponse() {
+        return lastRegisterResponse;
     }
 
     /** 主控端发送连接请求（目标被控端 ID + 主控端候选） */
@@ -173,7 +180,10 @@ public final class SignalingClient implements AutoCloseable {
 
     private void dispatch(SignalingEnvelope envelope) {
         switch (envelope.getPayloadCase()) {
-            case REGISTER_RESPONSE -> registerFuture.complete(envelope.getRegisterResponse());
+            case REGISTER_RESPONSE -> {
+                lastRegisterResponse = envelope.getRegisterResponse();
+                registerFuture.complete(envelope.getRegisterResponse());
+            }
             case HEARTBEAT_ACK -> {
                 // 心跳回执，无需处理
             }

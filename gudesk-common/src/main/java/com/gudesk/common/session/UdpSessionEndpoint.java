@@ -82,8 +82,8 @@ public final class UdpSessionEndpoint implements SessionTransport {
     public static final int FRAGMENT_PAYLOAD_LIMIT = 1100;
     /** 单帧最大分片数（1100×58 ≈ 63KB，超过直接丢帧） */
     public static final int MAX_FRAGMENTS_PER_FRAME = 58;
-    /** 重传间隔（毫秒） */
-    public static final long RETRANSMIT_INTERVAL_MS = 500;
+    /** 重传间隔（毫秒）：输入/控制等可靠消息丢包后最迟在此间隔重发 */
+    public static final long RETRANSMIT_INTERVAL_MS = 200;
     /** 重传失败判定断开的次数上限 */
     public static final int MAX_RETRANSMITS = 3;
     /** 乱序缓冲窗口（可靠消息 seq 距期望值超过此距离即丢弃，靠对端重传恢复） */
@@ -130,6 +130,10 @@ public final class UdpSessionEndpoint implements SessionTransport {
     private final HashMap<Long, SessionMessage> reorderBuffer = new HashMap<>();
     private long lastDeliveredSeq;
     private long lastVideoFrameIndex = -1;
+    /** 上次累积确认值（快速重传：重复 ACK 表明下一 seq 可能丢失） */
+    private long lastAckSeq;
+    /** 连续重复 ACK 计数 */
+    private int dupAckCount;
 
     private volatile long lastPeerActivityMs = System.currentTimeMillis();
     private volatile long lastKeyframeRequestMs;
@@ -405,12 +409,39 @@ public final class UdpSessionEndpoint implements SessionTransport {
         }
     }
 
-    /** 累积确认：移除 seq ≤ ack 的待确认消息 */
+    /** 累积确认：移除 seq ≤ ack 的待确认消息；重复 ACK 触发快速重传 */
     private void onAck(long ack) {
         if (ack <= 0) {
             return;
         }
         pendingSends.keySet().removeIf(seq -> seq <= ack);
+        if (ack == lastAckSeq && ack < sendSeq.get()) {
+            // 重复 ACK：ack+1 的可靠消息可能丢失，连续 2 次重复后立即重传（不等定时器）
+            if (++dupAckCount >= 2) {
+                dupAckCount = 0;
+                retransmitNow(ack + 1);
+            }
+        } else if (ack > lastAckSeq) {
+            lastAckSeq = ack;
+            dupAckCount = 0;
+        }
+    }
+
+    /** 立即重传指定 seq（快速重传：对端重复 ACK 表明该 seq 丢失） */
+    private void retransmitNow(long seq) {
+        PendingSend pending = pendingSends.get(seq);
+        if (pending == null) {
+            return;
+        }
+        if (pending.retries >= MAX_RETRANSMITS) {
+            LOG.warn("可靠消息 seq={} 重传 {} 次仍无确认，判定会话断开", seq, pending.retries);
+            close("可靠消息重传超时：对端无响应");
+            return;
+        }
+        pending.retries++;
+        pending.lastSendMs = System.currentTimeMillis();
+        rawSend(pending.wire);
+        LOG.debug("可靠消息 seq={} 快速重传（第 {} 次）", seq, pending.retries);
     }
 
     /** 可靠消息：去重 + 乱序缓冲 + 依序投递 + 回 ACK */

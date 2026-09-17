@@ -7,6 +7,7 @@ import com.gudesk.common.proto.GuDeskProto.ConnectAccept;
 import com.gudesk.common.proto.GuDeskProto.ConnectForward;
 import com.gudesk.common.proto.GuDeskProto.ConnectReject;
 import com.gudesk.common.proto.GuDeskProto.PunchCandidate;
+import com.gudesk.common.proto.GuDeskProto.RegisterResponse;
 import com.google.protobuf.ByteString;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -60,8 +61,8 @@ public final class HostSignalingService implements AutoCloseable {
     private final HostSessionManager sessionManager;
     private final IntSupplier tcpSessionPort;
     private final InetSocketAddress signalingAddress;
-    private final InetSocketAddress stunAddress;
-    private final InetSocketAddress relayAddress;
+    private volatile InetSocketAddress stunAddress;
+    private volatile InetSocketAddress relayAddress;
     private final boolean noUdp;
     /** 中继预连接用的 Netty IO 线程组（守护线程） */
     private final EventLoopGroup relayGroup = new NioEventLoopGroup(1, r -> {
@@ -104,11 +105,26 @@ public final class HostSignalingService implements AutoCloseable {
             }
         });
         assignedId = signaling.register(new byte[0]);
+        applyAnnouncedPorts(signaling.registerResponse());
         if (!noUdp) {
             ensurePunchSocket();
         }
         LOG.info("信令注册成功: 被控 ID = {}（信令 {}，STUN {}，中继 {}）",
                 assignedId, signalingAddress, stunAddress, relayAddress);
+    }
+
+    /** 服务器通告了 STUN/中继端口时覆盖默认推导（0=未通告则保持默认端口） */
+    private void applyAnnouncedPorts(RegisterResponse response) {
+        if (response == null) {
+            return;
+        }
+        String host = signalingAddress.getHostString();
+        if (response.getStunPort() > 0) {
+            stunAddress = new InetSocketAddress(host, response.getStunPort());
+        }
+        if (response.getRelayPort() > 0) {
+            relayAddress = new InetSocketAddress(host, response.getRelayPort());
+        }
     }
 
     /** 服务器分配的被控 ID（未注册时为 null） */

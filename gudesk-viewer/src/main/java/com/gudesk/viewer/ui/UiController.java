@@ -42,8 +42,8 @@ public class UiController {
      */
     public interface ConnectHandler {
 
-        /** 连接目标（ip:port 直连；纯 ID 需信令服务器，暂不支持） */
-        void connect(String target, String password);
+        /** 连接目标（ip:port 直连；纯 ID 需信令服务器）与连接策略 */
+        void connect(String target, String password, ConnectPolicy policy);
 
         /** 主动断开当前会话 */
         void disconnect();
@@ -174,6 +174,13 @@ public class UiController {
      * 成功/失败经 {@link #updateState} / {@link #publishMessage} 回流。
      */
     public void requestConnect(String target, String password) {
+        requestConnect(target, password, ConnectPolicy.AUTO);
+    }
+
+    /**
+     * 请求连接目标（被控端 ID 或 ip:port）与密码，并指定连接策略。
+     */
+    public void requestConnect(String target, String password, ConnectPolicy policy) {
         if (target == null || target.isBlank()) {
             publishMessage("请输入连接目标（被控端 ID 或 ip:port）");
             return;
@@ -193,8 +200,8 @@ public class UiController {
             return;
         }
         updateState(ConnectionState.CONNECTING);
-        publishMessage("正在连接 " + normalizedTarget + " ...");
-        handler.connect(normalizedTarget, password);
+        publishMessage("正在连接 " + normalizedTarget + "（" + policy.label() + "）...");
+        handler.connect(normalizedTarget, password, policy);
     }
 
     /** 请求断开（交由 ConnectHandler；状态经 onClosed 回调回流） */

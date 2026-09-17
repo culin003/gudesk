@@ -5,6 +5,7 @@ import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
 import com.gudesk.common.spi.SpiLoader;
 import com.gudesk.common.spi.VideoDecoder;
+import com.gudesk.viewer.decode.DecoderSelector;
 import com.gudesk.viewer.decode.JavaCvVideoDecoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,6 +97,7 @@ public final class CliSessionRunner {
 
         VideoDecoder decoder;
         try {
+            DecoderSelector.selectPlatformDefault();
             decoder = SpiLoader.load(VideoDecoder.class, "decoder",
                     JavaCvVideoDecoder::defaultDecoder);
             decoder.init(AdapterConfig.builder()

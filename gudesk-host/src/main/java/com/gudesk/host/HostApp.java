@@ -1,6 +1,5 @@
 package com.gudesk.host;
 
-import com.gudesk.common.session.ConnectionGatekeeper;
 import com.gudesk.common.spi.AdapterCapabilities;
 import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
@@ -14,18 +13,13 @@ import com.gudesk.host.encode.JavaCvVideoEncoder;
 import com.gudesk.host.session.AutoAuthorizer;
 import com.gudesk.host.session.Authorizer;
 import com.gudesk.host.session.HostPasswordStore;
-import com.gudesk.host.session.HostSessionManager;
+import com.gudesk.host.session.HostService;
 import com.gudesk.host.session.HostSignalingService;
 import com.gudesk.host.session.SwingAuthorizer;
 import com.gudesk.host.session.TcpSessionServer;
-import com.gudesk.host.session.TrustStore;
 
 import java.awt.GraphicsEnvironment;
-import java.net.Inet4Address;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.NetworkInterface;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -109,61 +103,34 @@ public class HostApp {
             System.out.println("[警告] 无图形环境（headless）：授权确认将默认拒绝（仅密码验证可用）");
         }
 
-        HostPasswordStore.PasswordRecord passwordRecord;
-        try {
-            HostPasswordStore.LoadResult loaded = HostPasswordStore.loadOrGenerate();
-            passwordRecord = loaded.record();
-            if (loaded.newlyGenerated()) {
-                String plain = loaded.generatedPlainPassword();
-                System.out.println("首次启动已生成随机密码: " + plain + "（仅本次显示，请妥善保存）");
-                showPasswordDialogOnce(plain);
-            } else {
-                System.out.println("密码已设置（存储于 " + HostPasswordStore.DEFAULT_FILE + "）");
-            }
-        } catch (Exception e) {
-            System.out.println("[错误] 密码文件加载失败: " + e.getMessage());
-            return 2;
-        }
-
         Authorizer authorizer = autoAccept
                 ? new AutoAuthorizer(AutoAuthorizer.Decision.ACCEPT)
                 : new SwingAuthorizer();
-        // 共享会话管理器：TCP accept / UDP 打洞 / 中继预连接三条接入路径复用单会话槽
-        HostSessionManager sessionManager = new HostSessionManager(passwordRecord, authorizer,
-                new TrustStore(TrustStore.DEFAULT_FILE),
-                new ConnectionGatekeeper(ConnectionGatekeeper.DEFAULT_MAX_FAILS,
-                        ConnectionGatekeeper.DEFAULT_LOCK_DURATION));
-        TcpSessionServer server = new TcpSessionServer(tcpPort, sessionManager);
+        HostService service = new HostService(authorizer, tcpPort, signalingAddress, noUdp);
         try {
-            server.start();
+            service.start();
         } catch (Exception e) {
-            System.out.println("[错误] 会话服务启动失败: " + e.getMessage());
+            System.out.println("[错误] 被控服务启动失败: " + e.getMessage());
             return 2;
         }
 
-        // 信令注册（失败降级为仅 ip:port 直连模式）
-        HostSignalingService signalingService = new HostSignalingService(sessionManager,
-                server::boundPort, signalingAddress, noUdp);
-        String hostId = null;
-        try {
-            signalingService.start();
-            hostId = signalingService.assignedId();
-        } catch (Exception e) {
-            System.out.println("[警告] 信令注册失败（纯 ID 连接不可用，仅支持 ip:port 直连）: "
-                    + e.getMessage());
+        if (service.newlyGeneratedPassword() != null) {
+            String plain = service.newlyGeneratedPassword();
+            System.out.println("首次启动已生成随机密码: " + plain + "（仅本次显示，请妥善保存）");
+            showPasswordDialogOnce(plain);
+        } else {
+            System.out.println("密码已设置（存储于 " + HostPasswordStore.DEFAULT_FILE + "）");
         }
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            signalingService.close();
-            server.stop();
-        }, "gudesk-host-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(service::stop, "gudesk-host-shutdown"));
         System.out.println("=== GuDesk 被控端就绪，等待主控端连接 ===");
+        String hostId = service.assignedId();
         if (hostId != null) {
             System.out.println("被控 ID: " + hostId + "（主控端可直接输入 ID 连接）");
         }
-        System.out.println("TCP 直连端口: " + server.boundPort());
+        System.out.println("TCP 直连端口: " + service.boundPort());
         printLocalAddresses();
-        System.out.println("主控端连接格式: <被控 ID> 或 <本机IP>:" + server.boundPort());
+        System.out.println("主控端连接格式: <被控 ID> 或 <本机IP>:" + service.boundPort());
 
         try {
             Thread.currentThread().join();
@@ -208,23 +175,8 @@ public class HostApp {
 
     /** 打印本机非回环 IPv4 地址（多网卡全列） */
     private static void printLocalAddresses() {
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                if (!ni.isUp() || ni.isLoopback() || ni.isPointToPoint()) {
-                    continue;
-                }
-                Enumeration<InetAddress> addresses = ni.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress addr = addresses.nextElement();
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
-                        System.out.printf("本机地址: %s (%s)%n", addr.getHostAddress(), ni.getName());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("[警告] 枚举本机地址失败: " + e.getMessage());
+        for (String addr : NetworkAddresses.localIpv4Addresses()) {
+            System.out.println("本机地址: " + addr);
         }
     }
 
@@ -268,8 +220,8 @@ public class HostApp {
     private static int runSelftest() {
         System.out.println("=== GuDesk Host 自检（capturer + encoder 链路）===");
 
-        // 1. SPI 加载（失败降级到默认实现；Wayland 会话优先 Portal 实现）
-        PortalScreenCapturer.preferOnWaylandSession(System.getenv());
+        // 1. SPI 加载（按运行环境显式选择默认实现；失败降级到默认实现）
+        PortalScreenCapturer.selectPlatformDefault(System.getenv());
         ScreenCapturer capturer = SpiLoader.load(ScreenCapturer.class, "capturer",
                 RobotScreenCapturer::defaultCapturer);
         VideoEncoder encoder = SpiLoader.load(VideoEncoder.class, "encoder",

@@ -3,6 +3,8 @@ package com.gudesk.host.input;
 import com.gudesk.common.spi.AdapterCapabilities;
 import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
+import com.gudesk.common.spi.InputInjector;
+import com.gudesk.common.spi.SpiLoader;
 import org.junit.jupiter.api.Test;
 
 import java.awt.GraphicsEnvironment;
@@ -97,6 +99,26 @@ class RobotInputInjectorTest {
         AdapterException e = assertThrows(AdapterException.class,
                 () -> injector.init(AdapterConfig.builder().build()));
         assertEquals("Wayland 会话不支持输入注入，当前仅支持 X11", e.getMessage());
+    }
+
+    @Test
+    void SPI无偏好时默认选择Robot注入器而非Portal() {
+        // 兜底回归：即便绕过 selectPlatformDefault 直接 SpiLoader.load，无偏好时也应
+        // 选中 ServiceLoader 注册顺序第一位的默认实现 RobotInputInjector，而非 Portal。
+        String saved = System.getProperty("gudesk.adapter.injector");
+        System.clearProperty("gudesk.adapter.injector");
+        try {
+            InputInjector injector = SpiLoader.load(InputInjector.class, "injector",
+                    RobotInputInjector::defaultInjector);
+            assertTrue(injector instanceof RobotInputInjector,
+                    "X11 无偏好时应选择 RobotInputInjector，而非 " + injector.getClass().getName());
+        } finally {
+            if (saved != null) {
+                System.setProperty("gudesk.adapter.injector", saved);
+            } else {
+                System.clearProperty("gudesk.adapter.injector");
+            }
+        }
     }
 
     @Test

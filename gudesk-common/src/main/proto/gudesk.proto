@@ -5,7 +5,8 @@ option java_outer_classname = "GuDeskProto";
 
 // 信令消息（主控/被控 <-> 信令服务器，信令通道内层信封）
 message RegisterRequest { string id = 1; bytes public_key = 2; }         // 被控端注册
-message RegisterResponse { bool ok = 1; string assigned_id = 2; string message = 3; }
+// stun_port/relay_port：服务器通告其 STUN/中继端口（0=未通告，客户端按信令主机默认端口推导）
+message RegisterResponse { bool ok = 1; string assigned_id = 2; string message = 3; uint32 stun_port = 4; uint32 relay_port = 5; }
 message Heartbeat { int64 timestamp = 1; }                                // 信令心跳
 message HeartbeatAck { int64 timestamp = 1; }
 message PunchCandidate { string address = 1; }                            // ip:port 候选

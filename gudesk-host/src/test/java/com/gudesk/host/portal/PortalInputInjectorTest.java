@@ -3,6 +3,7 @@ package com.gudesk.host.portal;
 import com.gudesk.common.spi.AdapterConfig;
 import com.gudesk.common.spi.AdapterException;
 import com.gudesk.host.input.PortalInputInjector;
+import com.gudesk.host.input.RobotInputInjector;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -139,6 +140,44 @@ class PortalInputInjectorTest {
     @AfterEach
     void tearDown() {
         PortalContextHolder.resetForTest();
+    }
+
+    // ------------------------------------------------------------------
+    // 平台默认选择（对称显式：Wayland→Portal、X11→Robot，不依赖 ServiceLoader 顺序）
+    // ------------------------------------------------------------------
+
+    @Test
+    void 平台选择_X11会话显式选Robot() {
+        String saved = System.getProperty("gudesk.adapter.injector");
+        System.clearProperty("gudesk.adapter.injector");
+        try {
+            PortalInputInjector.selectPlatformDefault(X11_ENV);
+            assertEquals(RobotInputInjector.class.getName(),
+                    System.getProperty("gudesk.adapter.injector"));
+        } finally {
+            if (saved != null) {
+                System.setProperty("gudesk.adapter.injector", saved);
+            } else {
+                System.clearProperty("gudesk.adapter.injector");
+            }
+        }
+    }
+
+    @Test
+    void 平台选择_Wayland会话选Portal() {
+        String saved = System.getProperty("gudesk.adapter.injector");
+        System.clearProperty("gudesk.adapter.injector");
+        try {
+            PortalInputInjector.selectPlatformDefault(WAYLAND_ENV);
+            assertEquals(PortalInputInjector.class.getName(),
+                    System.getProperty("gudesk.adapter.injector"));
+        } finally {
+            if (saved != null) {
+                System.setProperty("gudesk.adapter.injector", saved);
+            } else {
+                System.clearProperty("gudesk.adapter.injector");
+            }
+        }
     }
 
     /** init（Wayland 环境）→ start，返回就绪的注入器 */

@@ -53,6 +53,9 @@ public final class SignalingServer implements AutoCloseable {
     private final long heartbeatTimeoutMs;
     private final long sweepIntervalMs;
     private final long connectTimeoutMs;
+    /** 通告给客户端的 STUN/中继端口（0=未通告，客户端按信令主机默认端口推导） */
+    private volatile int stunPort;
+    private volatile int relayPort;
 
     private final ConcurrentHashMap<String, Connection> online = new ConcurrentHashMap<>();
 
@@ -78,6 +81,12 @@ public final class SignalingServer implements AutoCloseable {
         this.heartbeatTimeoutMs = heartbeatTimeoutMs;
         this.sweepIntervalMs = sweepIntervalMs;
         this.connectTimeoutMs = connectTimeoutMs;
+    }
+
+    /** 设置通告给客户端的 STUN/中继端口（服务器启动时由 ServerApp 注入实际端口）。 */
+    public void setStunRelayPorts(int stunPort, int relayPort) {
+        this.stunPort = stunPort;
+        this.relayPort = relayPort;
     }
 
     /** 启动 accept 循环与后台清扫（均为虚拟线程）。 */
@@ -192,7 +201,9 @@ public final class SignalingServer implements AutoCloseable {
         write(conn, SignalingEnvelope.newBuilder()
                 .setRegisterResponse(RegisterResponse.newBuilder()
                         .setOk(true)
-                        .setAssignedId(newId))
+                        .setAssignedId(newId)
+                        .setStunPort(stunPort)
+                        .setRelayPort(relayPort))
                 .build());
     }
 

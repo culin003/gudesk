@@ -3,6 +3,7 @@ package com.gudesk.viewer.session;
 import com.gudesk.common.crypto.CryptoUtil;
 import com.gudesk.common.crypto.SessionCipher;
 import com.gudesk.common.proto.GuDeskProto.KeyEvent;
+import com.gudesk.common.proto.GuDeskProto.KeyFrameRequest;
 import com.gudesk.common.proto.GuDeskProto.MouseButtonEvent;
 import com.gudesk.common.proto.GuDeskProto.MouseMoveEvent;
 import com.gudesk.common.proto.GuDeskProto.SessionClose;
@@ -39,6 +40,7 @@ import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -56,9 +58,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与持有证明 SHA256(ECDH(身份私钥, 被控端临时公钥))——被控端按身份公钥指纹维护
  * "始终信任"列表（命中免授权确认弹窗），持有证明防止冒用他人身份公钥。
  *
- * <p>线程模型：解码在 Netty IO 线程（平台线程，满足 JavaCV JNI 约束）；
+ * <p>线程模型：解码在专用平台线程（解耦自 Netty IO 线程，满足 JavaCV JNI 约束）；
+ * IO 线程只负责收包并投递到容量 1 的交付槽（解码线程忙时丢旧帧，避免 TCP 背压）；
  * 渲染经 {@code Platform.runLater} 提交 FX 线程（renderer 非 null 即 UI 模式）；
- * 统计回调在 IO 线程，实现方自行保证线程安全。
+ * 统计回调在解码线程，实现方自行保证线程安全。
  *
  * <p>{@code renderer == null} 为无 UI 模式（CLI 联调统计），跳过渲染与 JavaFX 依赖。
  */
@@ -119,6 +122,13 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
     private final AtomicBoolean pendingRender = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
 
+    /** 专用解码线程（平台线程，JavaCV JNI 约束）：软解码移出 Netty IO 线程 */
+    private final Thread decodeThread;
+    /** 待解码帧交付槽（容量 1）：解码线程忙时保留最新帧、丢弃旧帧 */
+    private final ArrayBlockingQueue<NativeFrame> decodeQueue = new ArrayBlockingQueue<>(1);
+    /** 上次请求关键帧时间（节流：避免丢帧密集时刷 KeyFrameRequest） */
+    private volatile long lastKeyframeRequestMs;
+
     /**
      * 默认构造：加载/生成默认位置（{@code ~/.gudesk/viewer_identity}）的长期身份密钥。
      *
@@ -140,6 +150,9 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
         this.listener = listener;
         this.identityKeys = Objects.requireNonNull(identityKeys, "identityKeys");
         this.identityPub = SessionHandshake.encodePublicKey(identityKeys.getPublic());
+        this.decodeThread = new Thread(this::decodeLoop, "gudesk-viewer-decode");
+        this.decodeThread.setDaemon(true);
+        this.decodeThread.start();
     }
 
     /** 身份密钥加载：失败时降级为进程内临时身份（本次连接指纹不持久） */
@@ -332,7 +345,7 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
     }
 
     // ------------------------------------------------------------------
-    // 视频链路（IO 线程）：解密 → 解码 → FX 渲染
+    // 视频链路：IO 线程解密投递 → 解码线程软解码 → FX 线程渲染
     // ------------------------------------------------------------------
 
     @Override
@@ -344,34 +357,80 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
         NativeFrame encoded = new NativeFrame(h264,
                 (int) protoFrame.getWidth(), (int) protoFrame.getHeight(),
                 JavaCvVideoDecoder.INPUT_PIXEL_FORMAT, protoFrame.getCaptureNs());
-        try {
-            decoder.decode(encoded, decoded -> {
-                long captureToDecodeMs =
-                        Math.max(0, (System.nanoTime() - protoFrame.getCaptureNs()) / 1_000_000L);
-                listener.onFrameDecoded(captureToDecodeMs, decoded.width(), decoded.height());
-                FrameRenderer r = renderer;
-                boolean dispatched = false;
-                if (r != null && pendingRender.compareAndSet(false, true)) {
-                    dispatched = true;
-                    Platform.runLater(() -> {
-                        pendingRender.set(false);
-                        try {
-                            r.render(decoded);
-                        } catch (Throwable t) {
-                            LOG.debug("渲染失败", t);
-                        } finally {
-                            decoded.close(); // 归还解码输出池
-                        }
-                    });
-                }
-                if (!dispatched) {
-                    decoded.close();
+        // 解码已移出 IO 线程：容量 1 交付槽，解码线程忙时保留最新帧、丢弃旧帧
+        // （与捕获端交付槽同款防积压策略，避免软解码阻塞 IO 线程造成 TCP 背压与延迟累积）
+        if (!decodeQueue.offer(encoded)) {
+            NativeFrame stale = decodeQueue.poll();
+            if (stale != null) {
+                stale.close();
+            }
+            decodeQueue.offer(encoded);
+            // 丢帧 = H.264 帧间依赖断裂，主动请求关键帧快速重同步（不等周期性 IDR）
+            requestKeyframeThrottled();
+        }
+    }
+
+    /** 请求被控端立即输出关键帧（500ms 节流，可靠通道） */
+    private void requestKeyframeThrottled() {
+        long now = System.currentTimeMillis();
+        if (now - lastKeyframeRequestMs < 500) {
+            return;
+        }
+        lastKeyframeRequestMs = now;
+        SessionTransport ep = endpoint;
+        if (ep != null && connected.get()) {
+            ep.send(SessionMessage.newBuilder()
+                    .setKeyframeRequest(KeyFrameRequest.newBuilder())
+                    .build());
+        }
+    }
+
+    /** 专用解码循环（平台线程）：从交付槽取帧同步解码，解码结果走统计 + FX 渲染 */
+    private void decodeLoop() {
+        while (!closed.get()) {
+            NativeFrame encoded;
+            try {
+                encoded = decodeQueue.take();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (closed.get()) {
+                encoded.close();
+                return;
+            }
+            long captureNs = encoded.timestampNs();
+            try {
+                decoder.decode(encoded, decoded -> onDecoded(decoded, captureNs));
+            } catch (Throwable t) {
+                LOG.warn("解码失败", t);
+            } finally {
+                encoded.close();
+            }
+        }
+    }
+
+    /** 解码完成回调（解码线程）：统计上报 + 经 Platform.runLater 提交 FX 渲染 */
+    private void onDecoded(NativeFrame decoded, long captureNs) {
+        long captureToDecodeMs = Math.max(0, (System.nanoTime() - captureNs) / 1_000_000L);
+        listener.onFrameDecoded(captureToDecodeMs, decoded.width(), decoded.height());
+        FrameRenderer r = renderer;
+        boolean dispatched = false;
+        if (r != null && pendingRender.compareAndSet(false, true)) {
+            dispatched = true;
+            Platform.runLater(() -> {
+                pendingRender.set(false);
+                try {
+                    r.render(decoded);
+                } catch (Throwable t) {
+                    LOG.debug("渲染失败", t);
+                } finally {
+                    decoded.close(); // 归还解码输出池
                 }
             });
-        } catch (Throwable t) {
-            LOG.warn("解码失败", t);
-        } finally {
-            encoded.close();
+        }
+        if (!dispatched) {
+            decoded.close();
         }
     }
 
@@ -458,6 +517,17 @@ public final class ViewerSessionClient implements SessionEventListener, InputFor
     private void closeQuietly(String reason) {
         if (!closed.compareAndSet(false, true)) {
             return;
+        }
+        // 先停解码线程（中断 + 等待），确保 decoder.stop/close 不与解码竞争
+        decodeThread.interrupt();
+        try {
+            decodeThread.join(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        NativeFrame stale;
+        while ((stale = decodeQueue.poll()) != null) {
+            stale.close();
         }
         try {
             decoder.stop();

@@ -102,6 +102,7 @@ public final class HostSession implements SessionEventListener {
     private final TrustStore trustStore;
     private final Consumer<Boolean> passwordResultReporter;
     private final Consumer<HostSession> releaseSlot;
+    private final Runnable establishedReporter;
 
     private final SessionTransport transport;
     private final AtomicBoolean cipherActive = new AtomicBoolean();
@@ -131,19 +132,22 @@ public final class HostSession implements SessionEventListener {
      * @param passwordResultReporter 密码验证结果上报（true=通过清零计数，false=失败计数，
      *                              由服务端 ConnectionGatekeeper 决定锁定；可为 null）
      * @param releaseSlot           会话终止时释放服务端单会话槽
+     * @param establishedReporter   会话进入 ESTABLISHED 时的回调（"被控中"状态指示；不可为 null）
      */
     public HostSession(SessionTransport transport,
                        HostPasswordStore.PasswordRecord passwordRecord,
                        Authorizer authorizer,
                        TrustStore trustStore,
                        Consumer<Boolean> passwordResultReporter,
-                       Consumer<HostSession> releaseSlot) {
+                       Consumer<HostSession> releaseSlot,
+                       Runnable establishedReporter) {
         this.transport = Objects.requireNonNull(transport, "transport");
         this.passwordRecord = passwordRecord;
         this.authorizer = Objects.requireNonNull(authorizer, "authorizer");
         this.trustStore = Objects.requireNonNull(trustStore, "trustStore");
         this.passwordResultReporter = passwordResultReporter;
         this.releaseSlot = releaseSlot;
+        this.establishedReporter = Objects.requireNonNull(establishedReporter, "establishedReporter");
     }
 
     /** 开始等待协商（进入 NEGOTIATING，等待主控端 SessionNegotiate） */
@@ -169,6 +173,11 @@ public final class HostSession implements SessionEventListener {
     /** 会话是否已终止（单会话槽位检查用） */
     public boolean isTerminated() {
         return terminated.get();
+    }
+
+    /** 会话是否已进入 ESTABLISHED（"被控中"状态指示用） */
+    public boolean isEstablished() {
+        return established.get();
     }
 
     /** 是否已收到首条会话消息（false=预建连接尚未协商，可被并发竞争中的 UDP 直连路径抢占） */
@@ -402,6 +411,7 @@ public final class HostSession implements SessionEventListener {
                         .setCapabilities(detectHostCapabilities()))
                 .build());
         established.set(true);
+        establishedReporter.run(); // 通知"被控中"状态（HostSessionManager → UI）
         transport.setState(SessionState.ESTABLISHED); // 启动会话内心跳
         LOG.info("会话已建立: {}", transport.remoteDescription());
         startMediaPipeline();
@@ -453,9 +463,9 @@ public final class HostSession implements SessionEventListener {
 
     private void startMediaPipeline() {
         try {
-            // Wayland 会话优先 Portal 捕获/注入实现（用户显式配置 SPI 偏好时不干预）
-            PortalScreenCapturer.preferOnWaylandSession(System.getenv());
-            PortalInputInjector.preferOnWaylandSession(System.getenv());
+            // 按运行环境显式选择默认捕获/注入实现（用户显式配置 SPI 偏好时不干预）
+            PortalScreenCapturer.selectPlatformDefault(System.getenv());
+            PortalInputInjector.selectPlatformDefault(System.getenv());
             capturer = SpiLoader.load(ScreenCapturer.class, "capturer",
                     RobotScreenCapturer::defaultCapturer);
             encoder = SpiLoader.load(VideoEncoder.class, "encoder",

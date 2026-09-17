@@ -97,18 +97,17 @@ public class PortalScreenCapturer implements ScreenCapturer {
     private long dropCount;
 
     // ------------------------------------------------------------------
-    // 平台选择（Wayland 会话优先本实现，用户显式配置时不干预）
+    // 平台选择（按运行环境显式决定默认实现，用户显式配置时不干预）
     // ------------------------------------------------------------------
 
     /**
-     * 在 Wayland 会话下将捕获器 SPI 偏好设置为 Portal 实现（若用户未以系统属性
-     * gudesk.adapter.capturer 或环境变量 GUDESK_ADAPTER_CAPTURER 显式指定）。
-     * 应在 SpiLoader.load(ScreenCapturer.class, "capturer", ...) 之前调用。
+     * 按运行环境显式选择屏幕捕获默认实现：Wayland 会话选本 Portal 实现，X11 选
+     * {@link RobotScreenCapturer}。用户以系统属性 gudesk.adapter.capturer 或环境变量
+     * GUDESK_ADAPTER_CAPTURER 显式指定时不干预。
+     * 应在 SpiLoader.load(ScreenCapturer.class, "capturer", ...) 之前调用；
+     * 显式按环境决定，不依赖 ServiceLoader 注册顺序。
      */
-    public static void preferOnWaylandSession(Map<String, String> env) {
-        if (!RobotScreenCapturer.isWaylandSession(env)) {
-            return;
-        }
+    public static void selectPlatformDefault(Map<String, String> env) {
         if (System.getProperty("gudesk.adapter.capturer") != null) {
             return;
         }
@@ -116,7 +115,10 @@ public class PortalScreenCapturer implements ScreenCapturer {
         if (envOverride != null && !envOverride.isBlank()) {
             return;
         }
-        System.setProperty("gudesk.adapter.capturer", PortalScreenCapturer.class.getName());
+        String impl = RobotScreenCapturer.isWaylandSession(env)
+                ? PortalScreenCapturer.class.getName()
+                : RobotScreenCapturer.class.getName();
+        System.setProperty("gudesk.adapter.capturer", impl);
     }
 
     // ------------------------------------------------------------------
@@ -155,7 +157,7 @@ public class PortalScreenCapturer implements ScreenCapturer {
                 + "或以 gudesk.portal.helper / GUDESK_PORTAL_HELPER 指定路径）");
     }
 
-    /** 常规候选路径：系统安装位置 + 开发工作目录（mvn/IDE 运行时探测项目内构建产物） */
+    /** 常规候选路径：系统安装位置 + 开发工作目录 + app-image 内 lib/（自包含 tar.gz 部署） */
     private static List<String> helperCandidates() {
         List<String> candidates = new ArrayList<>(List.of(
                 "/usr/lib/gudesk/" + HELPER_BIN,
@@ -165,6 +167,14 @@ public class PortalScreenCapturer implements ScreenCapturer {
         candidates.add(cwd + "/" + HELPER_BIN);
         candidates.add(cwd + "/native/portal-helper/" + HELPER_BIN);
         candidates.add(cwd + "/../native/portal-helper/" + HELPER_BIN);
+        // app-image 布局：<image>/lib/app/gudesk-host-*.jar → <image>/lib/gudesk-portal-helper
+        try {
+            Path jar = Path.of(PortalScreenCapturer.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            candidates.add(jar.getParent().getParent().resolve(HELPER_BIN).toString());
+        } catch (Exception ignored) {
+            // 非 jar 部署（如 IDE classes 目录）时忽略
+        }
         return candidates;
     }
 

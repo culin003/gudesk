@@ -1,0 +1,16 @@
+[Unit]
+Description=GuDesk Signaling/STUN/Relay Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gudesk-server
+ExecStart=/opt/gudesk-server/bin/gudesk-server
+Restart=on-failure
+RestartSec=5
+# 如不希望以 root 运行，取消注释并预先创建专用用户：
+# User=gudesk
+# Group=gudesk
+
+[Install]
+WantedBy=multi-user.target

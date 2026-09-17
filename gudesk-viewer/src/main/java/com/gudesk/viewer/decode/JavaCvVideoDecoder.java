@@ -7,7 +7,6 @@ import com.gudesk.common.spi.NativeFrame;
 import com.gudesk.common.spi.VideoDecoder;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
 import org.bytedeco.ffmpeg.avcodec.AVCodecContext;
-import org.bytedeco.ffmpeg.avcodec.AVCodecParserContext;
 import org.bytedeco.ffmpeg.avcodec.AVPacket;
 import org.bytedeco.ffmpeg.avutil.AVFrame;
 import org.bytedeco.ffmpeg.global.avcodec;
@@ -15,7 +14,6 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.ffmpeg.swscale.SwsContext;
 import org.bytedeco.javacpp.BytePointer;
-import org.bytedeco.javacpp.IntPointer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,9 +24,8 @@ import java.util.function.Consumer;
 /**
  * 基于 JavaCV（JavaCPP Presets for FFmpeg，软解码）的 H.264 视频解码默认实现。
  *
- * <p>解码链路：输入 Annex-B 码流帧（{@code pixelFormat="H264"}）→
- * {@code av_parser_parse2} 流式切分 NAL/帧（Annex-B 码流解码器自适应，
- * 无需 extradata，分辨率变化时自动重建转换上下文）→
+ * <p>解码链路：输入 Annex-B 码流帧（{@code pixelFormat="H264"}，每个帧已是
+ * 编码端 {@code avcodec_receive_packet} 输出的完整 access unit，SPS/PPS 内联于关键帧）→
  * {@code avcodec_send_packet/receive_frame} →
  * {@code sws_scale} 转换 YUV420P（等帧格式）→ BGRA →
  * 输出 {@code pixelFormat="BGRA"} 的堆外 direct ByteBuffer 帧
@@ -60,7 +57,6 @@ public class JavaCvVideoDecoder implements VideoDecoder {
     public static final int MAX_FPS = 60;
 
     private AVCodecContext codecCtx;
-    private AVCodecParserContext parserCtx;
     private AVPacket packet;
     private AVFrame decFrame;
     private AVFrame bgraFrame;
@@ -72,9 +68,6 @@ public class JavaCvVideoDecoder implements VideoDecoder {
     /** 输出帧缓冲复用池 */
     private ByteBuffer[] outputPool;
     private int poolIndex;
-    /** parser 输出参数（@ByPtrPtr 回填的输出缓冲指针/长度，复用避免每帧分配） */
-    private BytePointer parserOutBuf;
-    private IntPointer parserOutSize;
 
     private volatile boolean inited;
     private volatile boolean started;
@@ -113,17 +106,9 @@ public class JavaCvVideoDecoder implements VideoDecoder {
             release();
             throw new AdapterException("avcodec_open2 失败: " + ret);
         }
-        // Annex-B 流式解析：按 NAL 边界切分出完整帧，无需 extradata（SPS/PPS 内联于码流）
-        parserCtx = avcodec.av_parser_init(avcodec.AV_CODEC_ID_H264);
-        if (parserCtx == null) {
-            release();
-            throw new AdapterException("av_parser_init(AV_CODEC_ID_H264) 失败");
-        }
         packet = avcodec.av_packet_alloc();
         decFrame = avutil.av_frame_alloc();
         bgraFrame = avutil.av_frame_alloc();
-        parserOutBuf = new BytePointer(1);
-        parserOutSize = new IntPointer(1);
         srcWidth = 0;
         srcHeight = 0;
         srcFormat = -1;
@@ -131,7 +116,7 @@ public class JavaCvVideoDecoder implements VideoDecoder {
         poolIndex = 0;
         decodedCount = 0;
         inited = true;
-        LOG.info("JavaCvVideoDecoder 初始化完成: {}→{} (Annex-B 流式解析, 单线程软解码)",
+        LOG.info("JavaCvVideoDecoder 初始化完成: {}→{} (完整 access unit 直送, 单线程软解码)",
                 INPUT_PIXEL_FORMAT, OUTPUT_PIXEL_FORMAT);
     }
 
@@ -162,10 +147,6 @@ public class JavaCvVideoDecoder implements VideoDecoder {
 
     @Override
     public void release() {
-        if (parserCtx != null) {
-            avcodec.av_parser_close(parserCtx);
-            parserCtx = null;
-        }
         if (packet != null) {
             avcodec.av_packet_free(packet);
             packet = null;
@@ -186,8 +167,6 @@ public class JavaCvVideoDecoder implements VideoDecoder {
             avcodec.avcodec_free_context(codecCtx);
             codecCtx = null;
         }
-        parserOutBuf = null;
-        parserOutSize = null;
         outputPool = null;
         inited = false;
     }
@@ -231,35 +210,15 @@ public class JavaCvVideoDecoder implements VideoDecoder {
             return;
         }
         BytePointer inPtr = in.isDirect() ? new BytePointer(in) : copyToDirect(in);
-        // Annex-B 数据 → parser 按 NAL 边界切分出完整帧 → 送解码器。
-        // 注意：h264 帧边界由下一帧起始码确认，parser 可能返回 consumed=0 且输出
-        // 此前滞留的帧（输入暂存 parser 内部缓冲）——有输出时需继续循环重喂未消费
-        // 数据；无输入消费且无输出时说明数据不足一帧，结束等待更多数据
-        int offset = 0;
-        while (offset < len) {
-            int consumed = avcodec.av_parser_parse2(parserCtx, codecCtx, parserOutBuf, parserOutSize,
-                    inPtr.position(offset), len - offset,
-                    avutil.AV_NOPTS_VALUE, avutil.AV_NOPTS_VALUE, 0);
-            if (consumed < 0) {
-                throw new AdapterException("av_parser_parse2 失败: " + consumed);
-            }
-            offset += consumed;
-            boolean hasOutput = parserOutSize.get() > 0;
-            if (hasOutput) {
-                packet.data(parserOutBuf);
-                packet.size(parserOutSize.get());
-                sendPacket(decodedOut);
-            }
-            if (consumed == 0 && !hasOutput) {
-                break;
-            }
-        }
-    }
-
-    private void sendPacket(Consumer<NativeFrame> decodedOut) throws AdapterException {
+        // 每个 VideoFrame 的 h264_data 已是编码端 avcodec_receive_packet 输出的完整
+        // H.264 access unit（Annex-B，含内联 SPS/PPS），直接送解码器，无需 parser 流式切分。
+        packet.data(inPtr);
+        packet.size(len);
         int ret = avcodec.avcodec_send_packet(codecCtx, packet);
         if (ret < 0) {
-            throw new AdapterException("avcodec_send_packet 失败: " + ret);
+            // 丢帧导致缺少参考/PPS（帧间依赖链断裂）：静默跳过损坏帧，等待后续关键帧重同步
+            LOG.debug("avcodec_send_packet 失败: {}（帧数据损坏，等待关键帧恢复）", ret);
+            return;
         }
         while (avcodec.avcodec_receive_frame(codecCtx, decFrame) == 0) {
             try {
@@ -304,9 +263,10 @@ public class JavaCvVideoDecoder implements VideoDecoder {
             swscale.sws_freeContext(swsCtx);
             swsCtx = null;
         }
+        // FAST_BILINEAR 降低颜色转换 CPU（远程桌面文字主要为亮度，色度影响小）
         swsCtx = swscale.sws_getContext(width, height, format,
                 width, height, avutil.AV_PIX_FMT_BGRA,
-                swscale.SWS_BILINEAR, null, null, (double[]) null);
+                swscale.SWS_FAST_BILINEAR, null, null, (double[]) null);
         if (swsCtx == null) {
             throw new AdapterException("sws_getContext 失败: " + width + "x" + height
                     + " fmt=" + format + " → BGRA");

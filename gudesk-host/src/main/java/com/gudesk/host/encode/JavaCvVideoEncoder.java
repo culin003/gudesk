@@ -28,10 +28,14 @@ import java.util.function.Consumer;
  * 基于 JavaCV（JavaCPP Presets for FFmpeg，libx264 软编码）的 H.264 视频编码默认实现。
  *
  * <p>编码链路：输入 BGRA 帧（堆外 direct ByteBuffer，零拷贝包装）→
- * {@code sws_scale} 转换为 YUV420P → {@code avcodec_send_frame/receive_packet}
+ * {@code sws_scale} 等比缩放（超出 {@link #DEFAULT_MAX_ENCODE_WIDTH} 时缩小）并转换为
+ * YUV420P → {@code avcodec_send_frame/receive_packet}
  * （libx264，preset=ultrafast、tune=zerolatency、GOP=60、无 B 帧、码率自适应）→
  * 输出 Annex-B 码流帧（{@code pixelFormat="H264"}，x264 未设置 GLOBAL_HEADER 时
  * 输出本身即为带起始码的 Annex-B，SPS/PPS 内联于关键帧之前）。
+ *
+ * <p>输入分辨率自适应：捕获源（尤其 Portal 的流分辨率在 start 前未知）首帧或
+ * 分辨率变化时，重建编码/缩放上下文并强制关键帧，保证解码端重同步。
  *
  * <p><b>线程约束</b>：本适配器全程在调用线程执行（调用方为捕获线程/会话线程），
  * 不创建任何线程；bytedeco JNI 调用不得运行在虚拟线程上——FFmpeg 原生库的
@@ -53,6 +57,8 @@ public class JavaCvVideoEncoder implements VideoEncoder {
     public static final String ENCODER_NAME = "libx264";
     /** 默认 GOP（关键帧间隔） */
     public static final int DEFAULT_GOP = 60;
+    /** 默认最大编码宽度（超出等比缩放，降低主控端软解压力） */
+    public static final int DEFAULT_MAX_ENCODE_WIDTH = 1920;
     /** 码率下限（bps） */
     public static final long MIN_BITRATE = 1_000_000L;
     /** 能力上限 */
@@ -72,6 +78,12 @@ public class JavaCvVideoEncoder implements VideoEncoder {
     private int encodeWidth;
     private int encodeHeight;
     private int fps;
+    private int gop;
+    private long bitrate;
+    private int maxEncodeWidth;
+    /** sws/编码上下文当前对应的输入宽高（-1=未构建；首帧或变化时重建） */
+    private int srcWidth = -1;
+    private int srcHeight = -1;
     private volatile boolean inited;
     private volatile boolean started;
     private long frameIndex;
@@ -99,54 +111,85 @@ public class JavaCvVideoEncoder implements VideoEncoder {
         if (width <= 0 || height <= 0) {
             throw new AdapterException("编码尺寸非法: " + width + "x" + height);
         }
-        // YUV420P 要求宽高为偶数：奇数尺寸裁剪 1 像素
-        this.encodeWidth = width & ~1;
-        this.encodeHeight = height & ~1;
         this.fps = config.fps() > 0 ? config.fps() : 15;
+        this.gop = parseGop(config);
+        this.bitrate = resolveBitrate(config);
+        this.maxEncodeWidth = parseMaxEncodeWidth(config);
         this.frameIndex = 0;
         this.extradataEmitted = false;
         this.encodedCount = 0;
         this.keyframeRequested.set(true);
+
+        this.packet = avcodec.av_packet_alloc();
+        this.bgraFrame = avutil.av_frame_alloc();
+        this.bgraFrame.format(avutil.AV_PIX_FMT_BGRA);
+
+        // 用 config 尺寸预构建（Portal 等捕获源真实分辨率在首帧才确定，encode 时会按需重建）
+        buildCodec(width, height);
+        inited = true;
+        LOG.info("JavaCvVideoEncoder 初始化完成: {}→{} (输入 {}x{}@{}fps, {}bps, gop={}, 最大编码宽 {}, libx264 ultrafast/zerolatency)",
+                INPUT_PIXEL_FORMAT, OUTPUT_PIXEL_FORMAT, width, height, fps, bitrate, gop, maxEncodeWidth);
+    }
+
+    /** 按输入宽高构建编码/缩放上下文（encode 首帧或分辨率变化时调用） */
+    private void buildCodec(int srcW, int srcH) throws AdapterException {
+        this.width = srcW;
+        this.height = srcH;
+        this.srcWidth = srcW;
+        this.srcHeight = srcH;
+        // 超出最大宽度时等比缩放；YUV420P 要求宽高偶数
+        int[] target = scaleToMaxWidth(srcW, srcH, maxEncodeWidth);
+        this.encodeWidth = target[0];
+        this.encodeHeight = target[1];
 
         AVCodec codec = avcodec.avcodec_find_encoder_by_name(ENCODER_NAME);
         if (codec == null) {
             throw new AdapterException("编码器 " + ENCODER_NAME
                     + " 不可用（需 ffmpeg -gpl 原生库，请检查 javacpp/ffmpeg 平台依赖）");
         }
-        codecCtx = avcodec.avcodec_alloc_context3(codec);
-        if (codecCtx == null) {
+        AVCodecContext ctx = avcodec.avcodec_alloc_context3(codec);
+        if (ctx == null) {
             throw new AdapterException("avcodec_alloc_context3 失败");
         }
-        long bitrate = resolveBitrate(config);
-        codecCtx.pix_fmt(avutil.AV_PIX_FMT_YUV420P);
-        codecCtx.width(encodeWidth);
-        codecCtx.height(encodeHeight);
-        codecCtx.time_base(new AVRational().num(1).den(fps));
-        codecCtx.framerate(new AVRational().num(fps).den(1));
-        codecCtx.gop_size(parseGop(config));
-        codecCtx.max_b_frames(0);
-        codecCtx.bit_rate(bitrate);
-        codecCtx.thread_count(0); // 线程数自动
-
-        // x264 私有选项：ultrafast + zerolatency（低延迟实时编码）；
-        // forced-idr=1：强制关键帧（pict_type=I）时输出 IDR（此前重复 SPS/PPS，供解码端重同步）
-        AVDictionary options = new AVDictionary();
         try {
-            avutil.av_dict_set(options, "preset", "ultrafast", 0);
-            avutil.av_dict_set(options, "tune", "zerolatency", 0);
-            avutil.av_dict_set(options, "forced-idr", "1", 0);
-            int ret = avcodec.avcodec_open2(codecCtx, null, options);
-            if (ret < 0) {
-                throw new AdapterException("avcodec_open2 失败: " + ret);
-            }
-        } finally {
-            avutil.av_dict_free(options);
-        }
+            ctx.pix_fmt(avutil.AV_PIX_FMT_YUV420P);
+            ctx.width(encodeWidth);
+            ctx.height(encodeHeight);
+            ctx.time_base(new AVRational().num(1).den(fps));
+            ctx.framerate(new AVRational().num(fps).den(1));
+            ctx.gop_size(gop);
+            ctx.max_b_frames(0);
+            ctx.bit_rate(bitrate);
+            ctx.thread_count(0); // 线程数自动
+            ctx.thread_type(AVCodecContext.FF_THREAD_SLICE); // 仅切片并行：避免帧级并行引入编码延迟（低延迟优先）
 
-        // BGRA → YUV420P 转换器（奇数尺寸由 sws 顺带裁剪到偶数）
-        swsCtx = swscale.sws_getContext(width, height, avutil.AV_PIX_FMT_BGRA,
+            // x264 私有选项：ultrafast + zerolatency（低延迟实时编码）；
+            // forced-idr=1：强制关键帧（pict_type=I）时输出 IDR（此前重复 SPS/PPS，供解码端重同步）
+            AVDictionary options = new AVDictionary();
+            try {
+                avutil.av_dict_set(options, "preset", "ultrafast", 0);
+                avutil.av_dict_set(options, "tune", "zerolatency", 0);
+                avutil.av_dict_set(options, "forced-idr", "1", 0);
+                int ret = avcodec.avcodec_open2(ctx, null, options);
+                if (ret < 0) {
+                    throw new AdapterException("avcodec_open2 失败: " + ret);
+                }
+            } finally {
+                avutil.av_dict_free(options);
+            }
+        } catch (Throwable t) {
+            avcodec.avcodec_free_context(ctx);
+            if (t instanceof AdapterException ae) {
+                throw ae;
+            }
+            throw new AdapterException("编码器上下文构建失败: " + t.getMessage(), t);
+        }
+        this.codecCtx = ctx;
+
+        // BGRA → YUV420P 转换器（同时完成等比缩放；FAST_BILINEAR 降低颜色转换 CPU，远程桌面足够）
+        swsCtx = swscale.sws_getContext(srcW, srcH, avutil.AV_PIX_FMT_BGRA,
                 encodeWidth, encodeHeight, avutil.AV_PIX_FMT_YUV420P,
-                swscale.SWS_BILINEAR, null, null, (double[]) null);
+                swscale.SWS_FAST_BILINEAR, null, null, (double[]) null);
         if (swsCtx == null) {
             release();
             throw new AdapterException("sws_getContext 失败");
@@ -159,16 +202,48 @@ public class JavaCvVideoEncoder implements VideoEncoder {
             release();
             throw new AdapterException("av_frame_get_buffer 失败");
         }
-        // 输入 BGRA 包装帧：data/linesize 每帧 encode 时填充
-        bgraFrame = avutil.av_frame_alloc();
-        bgraFrame.format(avutil.AV_PIX_FMT_BGRA);
-        bgraFrame.width(width);
-        bgraFrame.height(height);
-        packet = avcodec.av_packet_alloc();
-        inited = true;
-        LOG.info("JavaCvVideoEncoder 初始化完成: {}→{} ({}x{}@{}fps, {}bps, gop={}, libx264 ultrafast/zerolatency)",
-                INPUT_PIXEL_FORMAT, OUTPUT_PIXEL_FORMAT, encodeWidth, encodeHeight, fps, bitrate,
-                codecCtx.gop_size());
+        bgraFrame.width(srcW);
+        bgraFrame.height(srcH);
+        LOG.info("编码尺寸就绪: 输入 {}x{} → 编码 {}x{}", srcW, srcH, encodeWidth, encodeHeight);
+    }
+
+    /** 输入分辨率变化：释放尺寸相关上下文并重建，重置 pts 与关键帧标记 */
+    private void rebuildCodec(int srcW, int srcH) throws AdapterException {
+        if (swsCtx != null) {
+            swscale.sws_freeContext(swsCtx);
+            swsCtx = null;
+        }
+        if (yuvFrame != null) {
+            avutil.av_frame_free(yuvFrame);
+            yuvFrame = null;
+        }
+        if (codecCtx != null) {
+            avcodec.avcodec_free_context(codecCtx);
+            codecCtx = null;
+        }
+        buildCodec(srcW, srcH);
+        this.frameIndex = 0;                 // 新上下文 pts 从 0 重新计数
+        this.extradataEmitted = false;       // 新上下文重新拼接 extradata
+        this.keyframeRequested.set(true);    // 强制首帧 IDR，解码端重同步
+    }
+
+    /** 等比缩放到最大宽度（YUV420P 需偶数宽高），返回 [width, height] */
+    private static int[] scaleToMaxWidth(int srcW, int srcH, int maxWidth) {
+        int targetW = srcW;
+        int targetH = srcH;
+        if (srcW > maxWidth) {
+            targetW = maxWidth;
+            targetH = Math.max(2, (int) Math.round((double) srcH * maxWidth / srcW));
+        }
+        targetW &= ~1;
+        targetH &= ~1;
+        if (targetW < 2) {
+            targetW = 2;
+        }
+        if (targetH < 2) {
+            targetH = 2;
+        }
+        return new int[]{targetW, targetH};
     }
 
     @Override
@@ -216,6 +291,8 @@ public class JavaCvVideoEncoder implements VideoEncoder {
             avcodec.avcodec_free_context(codecCtx);
             codecCtx = null;
         }
+        srcWidth = -1;
+        srcHeight = -1;
         inited = false;
     }
 
@@ -247,9 +324,12 @@ public class JavaCvVideoEncoder implements VideoEncoder {
             throw new AdapterException("不支持的输入像素格式: " + frame.pixelFormat()
                     + "（仅支持 " + INPUT_PIXEL_FORMAT + "）");
         }
-        if (frame.width() != width || frame.height() != height) {
-            throw new AdapterException("帧尺寸不匹配: 输入 " + frame.width() + "x" + frame.height()
-                    + ", 编码器 " + width + "x" + height);
+        if (frame.width() <= 0 || frame.height() <= 0) {
+            throw new AdapterException("帧尺寸非法: " + frame.width() + "x" + frame.height());
+        }
+        // 首帧或输入分辨率变化：重建编码/缩放上下文（Portal 流分辨率在首帧才确定）
+        if (srcWidth != frame.width() || srcHeight != frame.height()) {
+            rebuildCodec(frame.width(), frame.height());
         }
         ByteBuffer bgra = frame.buffer();
         if (bgra.position() != 0) {
@@ -348,6 +428,23 @@ public class JavaCvVideoEncoder implements VideoEncoder {
             }
         }
         return DEFAULT_GOP;
+    }
+
+    /** 最大编码宽度解析：extra "max-encode-width" 优先，否则默认 {@link #DEFAULT_MAX_ENCODE_WIDTH} */
+    private static int parseMaxEncodeWidth(AdapterConfig config) {
+        String configured = config.extraValue("max-encode-width");
+        if (configured != null && !configured.isBlank()) {
+            try {
+                int value = Integer.parseInt(configured.trim());
+                if (value >= 2) {
+                    return value;
+                }
+                LOG.warn("非法 max-encode-width '{}'（须 >=2），使用默认值 {}", configured, DEFAULT_MAX_ENCODE_WIDTH);
+            } catch (NumberFormatException e) {
+                LOG.warn("非法 max-encode-width '{}', 使用默认值 {}", configured, DEFAULT_MAX_ENCODE_WIDTH);
+            }
+        }
+        return DEFAULT_MAX_ENCODE_WIDTH;
     }
 
     // ------------------------------------------------------------------
